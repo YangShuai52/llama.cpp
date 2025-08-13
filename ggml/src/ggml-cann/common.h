@@ -369,9 +369,12 @@ struct ggml_backend_cann_context {
     std::string description;         /**< Description of the device. */
     aclrtEvent copy_event = nullptr; /**< Event for managing copy operations. */
     void* init_ptr = nullptr;
+<<<<<<< HEAD
     void* sin_ptr = nullptr;
     void* cos_ptr = nullptr;
     int64_t max_position_length = 200000;
+=======
+>>>>>>> 2883429d4034aaae263704cea40f8a2e2619727f
 #ifdef USE_ACL_GRAPH
     /// Cached CANN ACL graph used for executing the current ggml computation graph.
     std::unique_ptr<ggml_cann_graph> cann_graph;

@@ -2158,6 +2158,50 @@ static void aclnn_cache_init(ggml_backend_cann_context& ctx, ggml_tensor* dst,
     int64_t theta_scale_ne[] = {theta_scale_length, 1, 1, 1};
     size_t theta_scale_nb[] = {sizeof(float_t), sizeof(float_t), sizeof(float_t),
                           theta_scale_length * sizeof(float_t)};
+<<<<<<< HEAD
+=======
+
+    if(ctx.init_ptr == nullptr){
+
+        ACL_CHECK(aclrtMalloc(&ctx.init_ptr,theta_scale_length * sizeof(float_t), ACL_MEM_MALLOC_HUGE_FIRST));
+        
+        aclTensor* acl_theta_scale_tensor =
+            ggml_cann_create_tensor(ctx.init_ptr, ACL_FLOAT, sizeof(float_t),
+                                    theta_scale_ne, theta_scale_nb, GGML_MAX_DIMS);
+        float start = 0;
+        float step = 1;
+        float stop = ne00 / 2;
+        float n_elements = ne00 / 2;
+        aclnn_arange(ctx, acl_theta_scale_tensor, start, stop, step, n_elements);
+
+        // power
+        aclScalar* acl_theta_scale = aclCreateScalar(&theta_scale, aclDataType::ACL_FLOAT);
+        GGML_CANN_CALL_ACLNN_OP(ctx, PowScalarTensor, acl_theta_scale, acl_theta_scale_tensor,
+                                acl_theta_scale_tensor);
+        
+        // freq_scale
+        if (freq_scale != 1) {
+            aclnn_muls(ctx, acl_theta_scale_tensor, freq_scale, nullptr, true);
+        }
+
+        // freq_factors
+        if (src2) {
+            aclTensor* acl_freq_factors_tensor = ggml_cann_create_tensor(
+                src2->data, ggml_cann_type_mapping(src2->type),
+                ggml_type_size(src2->type), theta_scale_ne, theta_scale_nb, GGML_MAX_DIMS);
+            aclnn_div(ctx, acl_theta_scale_tensor, acl_freq_factors_tensor);
+            ggml_cann_release_resources(ctx, acl_freq_factors_tensor);
+        }
+        // release
+        ggml_cann_release_resources(ctx, acl_theta_scale_tensor,acl_theta_scale);
+    }
+    
+    aclTensor* acl_theta_scale_tensor =
+            ggml_cann_create_tensor(ctx.init_ptr, ACL_FLOAT, sizeof(float_t),
+                                    theta_scale_ne, theta_scale_nb, GGML_MAX_DIMS);
+   
+    // position
+>>>>>>> 2883429d4034aaae263704cea40f8a2e2619727f
     GGML_ASSERT(src1->type == GGML_TYPE_I32);
     int64_t position_length = src1->ne[0];
     int64_t position_ne[] = {1, 1, position_length, 1};
@@ -2297,7 +2341,12 @@ static void aclnn_cache_init(ggml_backend_cann_context& ctx, ggml_tensor* dst,
     }
 
     // release
+<<<<<<< HEAD
     ggml_cann_release_resources(ctx, acl_sin_tensor, acl_cos_tensor);
+=======
+    ggml_cann_release_resources(ctx, acl_theta_scale_tensor, acl_position_tensor,
+        acl_theta_tensor, acl_sin_tensor, acl_cos_tensor);
+>>>>>>> 2883429d4034aaae263704cea40f8a2e2619727f
 }
 
 #ifdef __cplusplus
