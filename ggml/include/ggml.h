@@ -1390,8 +1390,19 @@ extern "C" {
     // B: k columns, m rows  (i.e. we transpose it internally) => [ne03 * x, ne02 * y, m, k]
     // result is n columns, m rows => [ne03 * x, ne02 * y, m, n]
     GGML_API struct ggml_tensor * ggml_mul_mat(
+                struct ggml_context * ctx,
+                struct ggml_tensor  * a,
+                struct ggml_tensor  * b)
+    // ys
+    GGML_API struct ggml_tensor * ggml_mul_mat_quant(
             struct ggml_context * ctx,
             struct ggml_tensor  * a,
+            struct ggml_tensor * deq_scale,
+            struct ggml_tensor * input_offset,
+            struct ggml_tensor * input_scale,
+            struct ggml_tensor * quant_bias,
+            struct ggml_tensor * weight_offset,
+            struct ggml_tensor * weight_scale,
             struct ggml_tensor  * b);
 
     // change the precision of a matrix multiplication

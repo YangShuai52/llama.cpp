@@ -483,8 +483,8 @@ class ModelBase:
             if bid is not None:
                 return False
         return name == (key_name + suffix)
-
-    def map_tensor_name(self, name: str, try_suffixes: Sequence[str] = (".weight", ".bias")) -> str:
+    # ys
+    def map_tensor_name(self, name: str, try_suffixes: Sequence[str] = (".weight", ".bias", ".deq_scale", ".input_offset", ".input_scale", ".quant_bias", ".weight_offset", ".weight_scale")) -> str:
         new_name = self.tensor_map.get_name(key=name, try_suffixes=try_suffixes)
         if new_name is None:
             raise ValueError(f"Can not map tensor {name!r}")
@@ -518,7 +518,8 @@ class ModelBase:
             old_dtype = data_torch.dtype
 
             # convert any unsupported data types to float32
-            if data_torch.dtype not in (torch.float16, torch.float32):
+            # ys
+            if data_torch.dtype not in (torch.float16, torch.float32, torch.int64, torch.int32, torch.int8):
                 data_torch = data_torch.to(torch.float32)
 
             # use the first number-like part of the tensor name as the block id
@@ -532,12 +533,25 @@ class ModelBase:
                 # TODO: why do we squeeze here?
                 # data = data_torch.squeeze().numpy()
                 data = data_torch.numpy()
-
+                
                 n_dims = len(data.shape)
                 data_qtype: gguf.GGMLQuantizationType | bool = self.tensor_force_quant(name, new_name, bid, n_dims)
 
                 # Most of the codebase that takes in 1D tensors or norms only handles F32 tensors
                 if n_dims <= 1 or new_name.endswith("_norm.weight"):
+                    data_qtype = gguf.GGMLQuantizationType.F32
+                # ys
+                if data.dtype == np.float16:
+                    data_qtype = gguf.GGMLQuantizationType.F16
+                elif data.dtype == np.float32:
+                    data_qtype = gguf.GGMLQuantizationType.F32
+                elif data.dtype == np.int8:
+                    data_qtype = gguf.GGMLQuantizationType.I8
+                elif data.dtype == np.int32:
+                    data_qtype = gguf.GGMLQuantizationType.I32
+                elif data.dtype == np.int64:
+                    data_qtype = gguf.GGMLQuantizationType.I64
+                else:
                     data_qtype = gguf.GGMLQuantizationType.F32
 
                 # Conditions should closely match those in llama_model_quantize_internal in llama.cpp
@@ -668,7 +682,8 @@ class ModelBase:
     def get_model_part_names(dir_model: Path, prefix: str, suffix: str) -> list[str]:
         part_names: list[str] = []
         for filename in os.listdir(dir_model):
-            if filename.startswith(prefix) and filename.endswith(suffix):
+            # ys
+            if filename.endswith(suffix):
                 part_names.append(filename)
 
         part_names.sort()
@@ -10059,6 +10074,10 @@ class LazyTorchTensor(gguf.LazyBase):
         torch.float16: np.float16,
         torch.float32: np.float32,
         torch.uint8: np.uint8,
+        # ys
+        torch.int8: np.int8,
+        torch.int32: np.int32,
+        torch.int64: np.int64
     }
 
     # used for safetensors slices

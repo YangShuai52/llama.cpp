@@ -49,6 +49,8 @@
 #include <aclnnop/aclnn_sin.h>
 #include <aclnnop/aclnn_sqrt.h>
 #include <aclnnop/aclnn_tanh.h>
+#include <aclnnop/aclnn_ascend_quant.h>
+#include <aclnnop/aclnn_quant_matmul_v4.h>
 
 #include <functional>
 #include <unordered_set>
@@ -952,7 +954,14 @@ static bool is_matmul_weight(const ggml_tensor * tensor) {
                                                                   "ffn_up.weight",      "ffn_down.weight" };
 
     for (const auto & suffix : weight_suffixes) {
-        if (name.find(suffix) != std::string::npos) {
+        // if (name.find(suffix) != std::string::npos) {
+        //     return true;
+        // }
+        const size_t suffix_len = suffix.size();
+        if (name.size() < suffix_len) {
+            continue;
+        }
+        if (name.compare(name.size() - suffix_len, suffix_len, suffix) == 0) {
             return true;
         }
     }

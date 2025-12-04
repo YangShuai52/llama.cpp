@@ -603,6 +603,16 @@ struct llm_graph_context {
     ggml_tensor * build_lora_mm(
               ggml_tensor * w,
               ggml_tensor * cur) const;
+    // ys
+    ggml_tensor * build_lora_mm_quant(
+              ggml_tensor * w,
+              ggml_tensor * deq_scale,
+              ggml_tensor * input_offset,
+              ggml_tensor * input_scale,
+              ggml_tensor * quant_bias,
+              ggml_tensor * weight_offset,
+              ggml_tensor * weight_scale,
+              ggml_tensor * cur) const;
 
     // do mat_mul_id, while optionally apply lora
     ggml_tensor * build_lora_mm_id(
@@ -632,6 +642,35 @@ struct llm_graph_context {
          llm_ffn_op_type   type_op,
        llm_ffn_gate_type   type_gate,
                      int   il) const;
+    // ys
+    ggml_tensor * build_ffn_quant(
+             ggml_tensor * cur,
+             ggml_tensor * up,
+             ggml_tensor * up_deq_scale,
+             ggml_tensor * up_input_offset,
+             ggml_tensor * up_input_scale,
+             ggml_tensor * up_quant_bias,
+             ggml_tensor * up_weight_offset,
+             ggml_tensor * up_weight_scale,
+             ggml_tensor * up_b,
+             ggml_tensor * up_s,
+             ggml_tensor * gate,
+             ggml_tensor * gate_deq_scale,
+             ggml_tensor * gate_input_offset,
+             ggml_tensor * gate_input_scale,
+             ggml_tensor * gate_quant_bias,
+             ggml_tensor * gate_weight_offset,
+             ggml_tensor * gate_weight_scale,
+             ggml_tensor * gate_b,
+             ggml_tensor * gate_s,
+             ggml_tensor * down,
+             ggml_tensor * down_b,
+             ggml_tensor * down_s,
+             ggml_tensor * act_scales,
+         llm_ffn_op_type   type_op,
+       llm_ffn_gate_type   type_gate,
+                     int   il) const;
+
 
     // build MoE FFN without bias tensors
     ggml_tensor * build_moe_ffn(
@@ -723,6 +762,25 @@ struct llm_graph_context {
     ggml_tensor * build_attn(
             llm_graph_input_attn_kv * inp,
             ggml_tensor * wo,
+            ggml_tensor * wo_b,
+            ggml_tensor * q_cur, // [n_embd_head_q, n_head_q, n_tokens]
+            ggml_tensor * k_cur, // [n_embd_head_k, n_head_k, n_tokens]
+            ggml_tensor * v_cur, // [n_embd_head_v, n_head_v, n_tokens]
+            ggml_tensor * kq_b,
+            ggml_tensor * sinks, // [n_head_q]
+            ggml_tensor * v_mla, // [n_embd_head_v_mla, n_embd_head_v, n_head_v]
+                  float   kq_scale,
+                    int   il) const;
+    // ys
+    ggml_tensor * build_attn_quant(
+            llm_graph_input_attn_kv * inp,
+            ggml_tensor * wo,
+            ggml_tensor * wo_deq_scale,
+            ggml_tensor * wo_input_offset,
+            ggml_tensor * wo_input_scale,
+            ggml_tensor * wo_quant_bias,
+            ggml_tensor * wo_weight_offset,
+            ggml_tensor * wo_weight_scale,
             ggml_tensor * wo_b,
             ggml_tensor * q_cur, // [n_embd_head_q, n_head_q, n_tokens]
             ggml_tensor * k_cur, // [n_embd_head_k, n_head_k, n_tokens]

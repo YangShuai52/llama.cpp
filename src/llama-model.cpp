@@ -3294,6 +3294,7 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
             case LLM_ARCH_QWEN2VL:
             case LLM_ARCH_DREAM:
                 {
+                     // ys
                     tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, 0);
 
                     // output
@@ -3325,6 +3326,49 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                         layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd,   n_ff}, 0);
                         layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {  n_ff, n_embd}, 0);
                         layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, 0);
+
+                        // ys 创建量化参数的tensor
+                        layer.ffn_gate_deq_scale = create_tensor(tn(LLM_TENSOR_FFN_GATE, "deq_scale", i), {n_ff}, 0);
+                        layer.ffn_gate_input_offset = create_tensor(tn(LLM_TENSOR_FFN_GATE, "input_offset", i), {1}, 0);
+                        layer.ffn_gate_input_scale = create_tensor(tn(LLM_TENSOR_FFN_GATE, "input_scale", i), {1}, 0);
+                        layer.ffn_gate_quant_bias = create_tensor(tn(LLM_TENSOR_FFN_GATE, "quant_bias", i), {n_ff}, 0);
+                        layer.ffn_gate_weight_offset = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight_offset", i), {1, n_ff}, 0);
+                        layer.ffn_gate_weight_scale = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight_scale", i), {1, n_ff}, 0);
+
+                        layer.ffn_up_deq_scale = create_tensor(tn(LLM_TENSOR_FFN_UP, "deq_scale", i), {n_ff}, 0);
+                        layer.ffn_up_input_offset = create_tensor(tn(LLM_TENSOR_FFN_UP, "input_offset", i), {1}, 0);
+                        layer.ffn_up_input_scale = create_tensor(tn(LLM_TENSOR_FFN_UP, "input_scale", i), {1}, 0);
+                        layer.ffn_up_quant_bias = create_tensor(tn(LLM_TENSOR_FFN_UP, "quant_bias", i), {n_ff}, 0);
+                        layer.ffn_up_weight_offset = create_tensor(tn(LLM_TENSOR_FFN_UP, "weight_offset", i), {1, n_ff}, 0);
+                        layer.ffn_up_weight_scale = create_tensor(tn(LLM_TENSOR_FFN_UP, "weight_scale", i), {1, n_ff}, 0);
+
+                        layer.attn_k_deq_scale = create_tensor(tn(LLM_TENSOR_ATTN_K, "deq_scale", i), {n_embd_gqa}, 0);
+                        layer.attn_k_input_offset = create_tensor(tn(LLM_TENSOR_ATTN_K, "input_offset", i), {1}, 0);
+                        layer.attn_k_input_scale = create_tensor(tn(LLM_TENSOR_ATTN_K, "input_scale", i), {1}, 0);
+                        layer.attn_k_quant_bias = create_tensor(tn(LLM_TENSOR_ATTN_K, "quant_bias", i), {n_embd_gqa}, 0);
+                        layer.attn_k_weight_offset = create_tensor(tn(LLM_TENSOR_ATTN_K, "weight_offset", i), {1, n_embd_gqa}, 0);
+                        layer.attn_k_weight_scale = create_tensor(tn(LLM_TENSOR_ATTN_K, "weight_scale", i), {1, n_embd_gqa}, 0);
+
+                        layer.attn_output_deq_scale = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "deq_scale", i), {n_embd}, 0);
+                        layer.attn_output_input_offset = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "input_offset", i), {1}, 0);
+                        layer.attn_output_input_scale = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "input_scale", i), {1}, 0);
+                        layer.attn_output_quant_bias = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "quant_bias", i), {n_embd}, 0);
+                        layer.attn_output_weight_offset = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight_offset", i), {1, n_embd}, 0);
+                        layer.attn_output_weight_scale = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight_scale", i), {1, n_embd}, 0);
+
+                        layer.attn_q_deq_scale = create_tensor(tn(LLM_TENSOR_ATTN_Q, "deq_scale", i), {n_embd}, 0);
+                        layer.attn_q_input_offset = create_tensor(tn(LLM_TENSOR_ATTN_Q, "input_offset", i), {1}, 0);
+                        layer.attn_q_input_scale = create_tensor(tn(LLM_TENSOR_ATTN_Q, "input_scale", i), {1}, 0);
+                        layer.attn_q_quant_bias = create_tensor(tn(LLM_TENSOR_ATTN_Q, "quant_bias", i), {n_embd}, 0);
+                        layer.attn_q_weight_offset = create_tensor(tn(LLM_TENSOR_ATTN_Q, "weight_offset", i), {1, n_embd}, 0);
+                        layer.attn_q_weight_scale = create_tensor(tn(LLM_TENSOR_ATTN_Q, "weight_scale", i), {1, n_embd}, 0);
+
+                        layer.attn_v_deq_scale = create_tensor(tn(LLM_TENSOR_ATTN_V, "deq_scale", i), {n_embd_gqa}, 0);
+                        layer.attn_v_input_offset = create_tensor(tn(LLM_TENSOR_ATTN_V, "input_offset", i), {1}, 0);
+                        layer.attn_v_input_scale = create_tensor(tn(LLM_TENSOR_ATTN_V, "input_scale", i), {1}, 0);
+                        layer.attn_v_quant_bias = create_tensor(tn(LLM_TENSOR_ATTN_V, "quant_bias", i), {n_embd_gqa}, 0);
+                        layer.attn_v_weight_offset = create_tensor(tn(LLM_TENSOR_ATTN_V, "weight_offset", i), {1, n_embd_gqa}, 0);
+                        layer.attn_v_weight_scale = create_tensor(tn(LLM_TENSOR_ATTN_V, "weight_scale", i), {1, n_embd_gqa}, 0);
                     }
                 } break;
             case LLM_ARCH_QWEN2MOE:

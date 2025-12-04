@@ -2397,6 +2397,9 @@ static bool ggml_backend_cann_supports_op(ggml_backend_dev_t dev, const ggml_ten
                 switch (op->src[0]->type) {
                     case GGML_TYPE_F16:
                     case GGML_TYPE_F32:
+                    case GGML_TYPE_I8:
+                    case GGML_TYPE_I32:
+                    case GGML_TYPE_I64:
                         return true;
                     case GGML_TYPE_Q8_0:
                     case GGML_TYPE_Q4_0:

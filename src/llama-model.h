@@ -407,6 +407,50 @@ struct llama_layer {
     struct llama_layer_shortconv shortconv;
 
     struct llama_layer_nextn nextn;
+
+    // ys 增加量化的scale、offset等张量
+    struct ggml_tensor * ffn_gate_deq_scale = nullptr;
+    struct ggml_tensor * ffn_gate_input_offset = nullptr;
+    struct ggml_tensor * ffn_gate_input_scale = nullptr;
+    struct ggml_tensor * ffn_gate_quant_bias = nullptr;
+    struct ggml_tensor * ffn_gate_weight_offset = nullptr;
+    struct ggml_tensor * ffn_gate_weight_scale = nullptr;
+
+    struct ggml_tensor * ffn_up_deq_scale = nullptr;
+    struct ggml_tensor * ffn_up_input_offset = nullptr;
+    struct ggml_tensor * ffn_up_input_scale = nullptr;
+    struct ggml_tensor * ffn_up_quant_bias = nullptr;
+    struct ggml_tensor * ffn_up_weight_offset = nullptr;
+    struct ggml_tensor * ffn_up_weight_scale = nullptr;
+
+    struct ggml_tensor * attn_k_deq_scale = nullptr;
+    struct ggml_tensor * attn_k_input_offset = nullptr;
+    struct ggml_tensor * attn_k_input_scale = nullptr;
+    struct ggml_tensor * attn_k_quant_bias = nullptr;
+    struct ggml_tensor * attn_k_weight_offset = nullptr;
+    struct ggml_tensor * attn_k_weight_scale = nullptr;
+
+    struct ggml_tensor * attn_output_deq_scale = nullptr;
+    struct ggml_tensor * attn_output_input_offset = nullptr;
+    struct ggml_tensor * attn_output_input_scale = nullptr;
+    struct ggml_tensor * attn_output_quant_bias = nullptr;
+    struct ggml_tensor * attn_output_weight_offset = nullptr;
+    struct ggml_tensor * attn_output_weight_scale = nullptr;
+
+    struct ggml_tensor * attn_q_deq_scale = nullptr;
+    struct ggml_tensor * attn_q_input_offset = nullptr;
+    struct ggml_tensor * attn_q_input_scale = nullptr;
+    struct ggml_tensor * attn_q_quant_bias = nullptr;
+    struct ggml_tensor * attn_q_weight_offset = nullptr;
+    struct ggml_tensor * attn_q_weight_scale = nullptr;
+
+    struct ggml_tensor * attn_v_deq_scale = nullptr;
+    struct ggml_tensor * attn_v_input_offset = nullptr;
+    struct ggml_tensor * attn_v_input_scale = nullptr;
+    struct ggml_tensor * attn_v_quant_bias = nullptr;
+    struct ggml_tensor * attn_v_weight_offset = nullptr;
+    struct ggml_tensor * attn_v_weight_scale = nullptr;
+
 };
 
 struct llama_model {

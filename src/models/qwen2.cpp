@@ -30,15 +30,25 @@ llm_build_qwen2::llm_build_qwen2(const llama_model & model, const llm_graph_para
         // self-attention
         {
             // compute Q and K and RoPE them
-            ggml_tensor * Qcur = build_lora_mm(model.layers[il].wq, cur);
+           ggml_tensor * Qcur = build_lora_mm_quant(model.layers[il].wq, model.layers[il].attn_q_deq_scale,
+                                              model.layers[il].attn_q_input_offset, model.layers[il].attn_q_input_scale,
+                                              model.layers[il].attn_q_quant_bias, model.layers[il].attn_q_weight_offset,
+                                              model.layers[il].attn_q_weight_scale, cur);
             Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
             cb(Qcur, "Qcur", il);
 
-            ggml_tensor * Kcur = build_lora_mm(model.layers[il].wk, cur);
+            ggml_tensor * Kcur = build_lora_mm_quant(model.layers[il].wk, model.layers[il].attn_k_deq_scale,
+                                               model.layers[il].attn_k_input_offset, model.layers[il].attn_k_input_scale,
+                                               model.layers[il].attn_k_quant_bias, model.layers[il].attn_k_weight_offset,
+                                               model.layers[il].attn_k_weight_scale, cur);
             Kcur = ggml_add(ctx0, Kcur, model.layers[il].bk);
             cb(Kcur, "Kcur", il);
 
-            ggml_tensor * Vcur = build_lora_mm(model.layers[il].wv, cur);
+            ggml_tensor * Vcur = build_lora_mm_quant(model.layers[il].wv, model.layers[il].attn_v_deq_scale,
+                                               model.layers[il].attn_v_input_offset, model.layers[il].attn_v_input_scale,
+                                               model.layers[il].attn_v_quant_bias, model.layers[il].attn_v_weight_offset,
+                                               model.layers[il].attn_v_weight_scale, cur);
+
             Vcur = ggml_add(ctx0, Vcur, model.layers[il].bv);
             cb(Vcur, "Vcur", il);
 
@@ -62,9 +72,12 @@ llm_build_qwen2::llm_build_qwen2(const llama_model & model, const llm_graph_para
             cb(Kcur, "Kcur", il);
             cb(Vcur, "Vcur", il);
 
-            cur = build_attn(inp_attn,
-                    model.layers[il].wo, model.layers[il].bo,
-                    Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
+            cur = build_attn_quant(inp_attn,
+                        model.layers[il].wo, model.layers[il].attn_output_deq_scale,
+                        model.layers[il].attn_output_input_offset, model.layers[il].attn_output_input_scale,
+                        model.layers[il].attn_output_quant_bias, model.layers[il].attn_output_weight_offset,
+                        model.layers[il].attn_output_weight_scale, model.layers[il].bo,
+                        Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
         }
         if (il == n_layer - 1 && inp_out_ids) {
             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
@@ -79,12 +92,18 @@ llm_build_qwen2::llm_build_qwen2(const llama_model & model, const llm_graph_para
                 LLM_NORM_RMS, il);
         cb(cur, "ffn_norm", il);
 
-        cur = build_ffn(cur,
-                model.layers[il].ffn_up,   NULL, NULL,
-                model.layers[il].ffn_gate, NULL, NULL,
-                model.layers[il].ffn_down, NULL, NULL,
-                NULL,
-                LLM_FFN_SILU, LLM_FFN_PAR, il);
+        cur = build_ffn_quant(cur,
+                    model.layers[il].ffn_up, model.layers[il].ffn_up_deq_scale,
+                    model.layers[il].ffn_up_input_offset, model.layers[il].ffn_up_input_scale,
+                    model.layers[il].ffn_up_quant_bias, model.layers[il].ffn_up_weight_offset,
+                    model.layers[il].ffn_up_weight_scale,  NULL, NULL,
+                    model.layers[il].ffn_gate, model.layers[il].ffn_gate_deq_scale,
+                    model.layers[il].ffn_gate_input_offset, model.layers[il].ffn_gate_input_scale,
+                    model.layers[il].ffn_gate_quant_bias, model.layers[il].ffn_gate_weight_offset,
+                    model.layers[il].ffn_gate_weight_scale,  NULL, NULL,
+                    model.layers[il].ffn_down, NULL, NULL,
+                    NULL,
+                    LLM_FFN_SILU, LLM_FFN_PAR, il);
         cb(cur, "ffn_out", il);
 
         cur = ggml_add(ctx0, cur, ffn_inp);

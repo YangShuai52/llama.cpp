@@ -2139,6 +2139,107 @@ static void ggml_cann_mul_mat_quant(ggml_backend_cann_context & ctx, ggml_tensor
     }
 }
 
+static void ggml_cann_w8a8_mul_mat_quant(ggml_backend_cann_context & ctx, ggml_tensor * dst, const enum ggml_type type) {
+    // weight int8, input fp32
+    ggml_tensor * weight = dst->src[0];         // weight
+    ggml_tensor * input = dst->src[1];          // input
+    ggml_tensor * deq_scale = dst->src[2];      // deq_scale
+    ggml_tensor * input_offset = dst->src[3];   // input_offset
+    ggml_tensor * input_scale = dst->src[4];    // input_scale
+    ggml_tensor * quant_bias = dst->src[5];     // quant_bias
+    ggml_tensor * weight_offset = dst->src[6];  // weight_offset
+    ggml_tensor * weight_scale = dst->src[7];   // weight_scale
+
+    // The shape of the weight is NCHW.
+    // Matrix multiplication uses HW dims.
+    // HC is regarded as batch.
+    // weight need transpose.
+    float weight_elem_size;
+    if (type == GGML_TYPE_I8) {
+        weight_elem_size = float(sizeof(int8_t));
+    } else {
+        GGML_ABORT("Only support and I8 MUL_MAT");
+    }
+
+    // 激活值量化
+    acl_tensor_ptr acl_input_tensor          = ggml_cann_create_tensor(input);
+    acl_tensor_ptr acl_input_scale_tensor    = ggml_cann_create_tensor(input_scale);
+    acl_tensor_ptr acl_input_offset_tensor   = ggml_cann_create_tensor(input_offset);
+    bool sqrtMode = false;
+    const char* roundMode = "round";
+    int32_t dst_Type = 2;
+
+    size_t acl_intput_i8_elem_size = sizeof(int8_t);
+    int64_t acl_intput_i8_ne[] = { input->ne[0], input->ne[1], input->ne[2], input->ne[3] };
+    size_t acl_intput_i8_nb[GGML_MAX_DIMS];
+    acl_intput_i8_nb[0] = acl_intput_i8_elem_size;
+    for(int i = 1; i < GGML_MAX_DIMS; ++i) {
+        acl_intput_i8_nb = acl_intput_i8_ne[i-1] * acl_intput_i8_nb[i-1];
+    }
+    ggml_cann_pool_alloc intput_i8_allocator(ctx.pool());
+    void * intput_i8_buffer = intput_i8_allocator.alloc(ggml_nelements(input) * acl_intput_i8_elem_size);
+    acl_tensor_ptr acl_input_i8_tensor = ggml_cann_create_tensor(intput_i8_buffer, ACL_INT8, acl_intput_i8_elem_size,
+                                                                  acl_intput_i8_ne, acl_intput_i8_nb, GGML_MAX_DIMS);
+
+    GGML_CANN_CALL_ACLNN_OP(ctx, AscendQuant, acl_input_fp_tensor.get(), acl_input_scale_tensor.get(), acl_input_offset_tensor.get(),
+                            sqrtMode, roundMode, dst_Type, acl_input_i8_tensor.get());
+
+    // weight
+
+    size_t acl_weight_i8_elem_size = sizeof(int8_t);
+    int64_t acl_weight_i8_stor_ne[] = { 32, 16, weight->ne[1]/16, weight->ne[0]/32, weight->ne[2], weight->ne[3] };
+    size_t  acl_weight_i8_stor_nb[GGML_MAX_DIMS+2];
+    acl_weight_i8_stor_nb[0] = acl_weight_i8_elem_size;
+    for(int i = 1; i<GGML_MAX_DIMS+2; ++i) {
+        acl_weight_i8_stor_nb[i] = acl_weight_i8_stor_nb[i-1] * acl_weight_i8_stor_ne[i-1];
+    }
+    int64_t acl_weight_i8_ne[] = { weight->ne[0], weight->ne[1], weight->ne[2], weight->ne[3] };
+    size_t acl_weight_i8_nb[GGML_MAX_DIMS];
+    acl_weight_i8_nb[0] = acl_weight_i8_elem_size;
+    for(int i = 1; i<GGML_MAX_DIMS; ++i) {
+       acl_weight_i8_nb[i] =acl_weight_i8_nb[i-1] * acl_weight_i8_ne[i-1];
+    }
+
+    acl_tensor_ptr acl_weight_i8_tensor = ggml_cann_create_tensor_quant(weight->data, ACL_INT8,
+                                                            acl_weight_i8_elem_size, acl_weight_i8_ne,
+                                                            acl_weight_i8_nb, GGML_MAX_DIMS, acl_weight_i8_stor_ne,
+                                                            acl_weight_i8_stor_nb, GGML_MAX_DIMS+2, ACL_FORMAT_FRACTAL_NZ);
+    size_t acl_deq_scale_elem_size = sizeof(int64_t);
+    int64_t acl_deq_scale_ne[] = { deq_scale->ne[0] };
+    size_t  acl_deq_scale_nb[] = {acl_deq_scale_elem_size};
+    acl_tensor_ptr acl_deq_scale_tensor    = ggml_cann_create_tensor(deq_scale->data, ACL_INT64, acl_deq_scale_elem_size,
+                                                            acl_deq_scale_ne, acl_deq_scale_nb, 1);
+    size_t acl_quant_bias_elem_size = sizeof(int32_t);
+    int64_t acl_quant_bias_ne[] = { quant_bias->ne[0] };
+    size_t  acl_quant_bias_nb[] = {acl_quant_bias_elem_size};
+    acl_tensor_ptr acl_quant_bias_tensor   = ggml_cann_create_tensor(quant_bias->data, ACL_INT32, acl_quant_bias_elem_size,
+                                                            acl_quant_bias_ne, acl_quant_bias_nb, 1);
+
+    // output
+    size_t               acl_output_elem_size = sizeof(uint16_t);
+    int64_t              acl_output_ne[] = {dst->ne[0], dst->ne[1], dst->ne[2], dst->ne[3]};
+    size_t               acl_output_nb[GGML_MAX_DIMS];
+    acl_output_nb[0] = acl_output_elem_size;
+    for(int i = 1; i<GGML_MAX_DIMS; ++i) {
+        acl_output_nb[i] = acl_output_nb[i-1] * acl_output_ne[i-1];
+    }
+    ggml_cann_pool_alloc output_allocator(ctx.pool());
+    void *               output_buffer = output_allocator.alloc(ggml_nelements(dst) * acl_output_elem_size);
+    acl_tensor_ptr acl_output_tensor = ggml_cann_create_tensor(output_buffer, ACL_FLOAT16, acl_output_elem_size,
+                                        acl_output_ne, acl_output_nb, GGML_MAX_DIMS, ACL_FORMAT_ND);
+
+    GGML_CANN_CALL_ACLNN_OP(ctx, QuantMatmulV4, acl_input_i8_tensor.get(), acl_weight_i8_tensor.get(), acl_deq_scale_tensor.get(),
+                            nullptr, nullptr, acl_quant_bias_tensor.get(),
+                            false, true, acl_output_tensor.get());
+
+    // cast out
+    if (dst->type != GGML_TYPE_F16) {
+        acl_tensor_ptr acl_dst_tensor    = ggml_cann_create_tensor(dst);
+        aclnn_cast(ctx, acl_output_tensor.get(), acl_dst_tensor.get(), ggml_cann_type_mapping(dst->type));
+    }
+}
+
+
 void ggml_cann_mul_mat(ggml_backend_cann_context & ctx, ggml_tensor * dst) {
     const enum ggml_type type = dst->src[0]->type;
     switch (type) {
@@ -2149,6 +2250,9 @@ void ggml_cann_mul_mat(ggml_backend_cann_context & ctx, ggml_tensor * dst) {
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q8_0:
             ggml_cann_mul_mat_quant(ctx, dst, type);
+            break;
+        case GGML_TYPE_I8:
+            ggml_cann_mul_mat_w8a8_quant(ctx, dst, type);
             break;
         default:
             GGML_ABORT("Unsupported type for mul_mat");
