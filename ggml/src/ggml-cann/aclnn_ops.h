@@ -49,8 +49,6 @@
 #include <aclnnop/aclnn_sin.h>
 #include <aclnnop/aclnn_sqrt.h>
 #include <aclnnop/aclnn_tanh.h>
-#include <aclnnop/aclnn_ascend_quant.h>
-#include <aclnnop/aclnn_quant_matmul_v4.h>
 
 #include <functional>
 #include <unordered_set>
