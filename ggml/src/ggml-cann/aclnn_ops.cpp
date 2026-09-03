@@ -4532,40 +4532,34 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
     // --- Cast state F32 -> F16 with V/K transpose ---
     // llama.cpp stores state transposed: s_out[j*S_v + i] = S[i][j] (layout [K, V, H, N])
     // ACLNN expects state layout [V, K, H, N] (K is contiguous in memory)
-    // Need physical transpose of dims 0 and 1
+    // Do physical transpose on host (state is small for decode: S_v*S_v*H*n_seqs floats)
     size_t state_elems = ggml_nelements(state);
     ggml_cann_pool_alloc state_f16_alloc(ctx.pool());
     void * state_f16 = state_f16_alloc.alloc(state_elems * sizeof(uint16_t));
     {
-        // Step 1: Cast F32 state -> F16 (preserve original [K, V, H, N] layout)
-        ggml_cann_pool_alloc state_tmp_alloc(ctx.pool());
-        void * state_tmp = state_tmp_alloc.alloc(state_elems * sizeof(uint16_t));
-        {
-            acl_tensor_ptr acl_src = ggml_cann_create_tensor(state);
-            size_t elem_size = sizeof(uint16_t);
-            size_t nb[GGML_MAX_DIMS];
-            nb[0] = elem_size;
-            for (int i = 1; i < GGML_MAX_DIMS; i++) {
-                nb[i] = nb[i - 1] * state->ne[i - 1];
+        // Step 1: Copy state from device to host
+        std::vector<float> state_host(state_elems);
+        ACL_CHECK(aclrtMemcpy(state_host.data(), state_elems * sizeof(float), state->data,
+                              state_elems * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST));
+        // Step 2: Transpose [K, V, H, N] -> [V, K, H, N] and cast to F16
+        // For each head h and seq s: transpose S_v x S_v matrix
+        std::vector<uint16_t> state_transposed(state_elems);
+        for (int64_t s = 0; s < n_seqs; s++) {
+            for (int64_t h = 0; h < H; h++) {
+                const float * src = state_host.data() + (s * H + h) * S_v * S_v;
+                uint16_t * dst = state_transposed.data() + (s * H + h) * S_v * S_v;
+                // src[j*S_v + i] = S[i][j] (K=outer, V=inner)
+                // dst[i*S_v + j] = S[i][j] (V=outer, K=inner)
+                for (int64_t i = 0; i < S_v; i++) {
+                    for (int64_t j = 0; j < S_v; j++) {
+                        dst[i * S_v + j] = ggml_fp32_to_fp16(src[j * S_v + i]);
+                    }
+                }
             }
-            acl_tensor_ptr acl_dst = ggml_cann_create_tensor(state_tmp, ACL_FLOAT16, elem_size, state->ne, nb, GGML_MAX_DIMS);
-            aclnn_cast(ctx, acl_src.get(), acl_dst.get(), ACL_FLOAT16);
         }
-        // Step 2: Physical transpose dims 0<->1 using aclnnCast with transposed strides
-        // Source: ne=[S_v, S_v, H, N], stride=[2, 2*S_v, ...] (layout [K,V,H,N])
-        // Dest:   ne=[S_v, S_v, H, N], stride=[2*S_v, 2, ...] (layout [V,K,H,N])
-        {
-            int64_t ne[] = { S_v, S_v, H, n_seqs };
-            // Source strides (original layout: K is row, V is col)
-            size_t src_nb[4] = { sizeof(uint16_t), sizeof(uint16_t) * S_v,
-                                  sizeof(uint16_t) * S_v * S_v, sizeof(uint16_t) * S_v * S_v * H };
-            // Dest strides (transposed: V is row, K is col)
-            size_t dst_nb[4] = { sizeof(uint16_t) * S_v, sizeof(uint16_t),
-                                  sizeof(uint16_t) * S_v * S_v, sizeof(uint16_t) * S_v * S_v * H };
-            acl_tensor_ptr acl_src = ggml_cann_create_tensor(state_tmp, ACL_FLOAT16, sizeof(uint16_t), ne, src_nb, 4);
-            acl_tensor_ptr acl_dst = ggml_cann_create_tensor(state_f16, ACL_FLOAT16, sizeof(uint16_t), ne, dst_nb, 4);
-            aclnn_cast(ctx, acl_src.get(), acl_dst.get(), ACL_FLOAT16);
-        }
+        // Step 3: Upload transposed F16 state to device
+        ACL_CHECK(aclrtMemcpy(state_f16, state_elems * sizeof(uint16_t), state_transposed.data(),
+                              state_elems * sizeof(uint16_t), ACL_MEMCPY_HOST_TO_DEVICE));
     }
 
     // --- Create ACL tensors with correct shapes for v310 API ---
@@ -4670,21 +4664,33 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
             aclnn_cast(ctx, acl_out_f16.get(), acl_out_f32.get(), ACL_FLOAT);
         }
 
-        // --- Cast updated state F16 -> F32 with V/K transpose back ---
+        // --- Transpose output state [V,K] -> [K,V] and cast F16 -> F32 ---
         // ACLNN outputs state in [V, K, H, N] layout, llama.cpp expects [K, V, H, N]
         size_t state_offset = S_v * H * num_tokens * sizeof(float);
         {
-            int64_t s_ne[] = { S_v, S_v, H, n_seqs };
-            // Source: ACLNN output in [V,K] layout (V row, K col contiguous)
-            size_t src_nb[4] = { sizeof(uint16_t) * S_v, sizeof(uint16_t),
-                                  sizeof(uint16_t) * S_v * S_v, sizeof(uint16_t) * S_v * S_v * H };
-            // Dest: llama.cpp [K,V] layout (K row, V col contiguous) in F32
-            size_t dst_nb[4] = { sizeof(float), sizeof(float) * S_v,
-                                  sizeof(float) * S_v * S_v, sizeof(float) * S_v * S_v * H };
-            acl_tensor_ptr acl_state_f16 = ggml_cann_create_tensor(state_f16, ACL_FLOAT16, sizeof(uint16_t), s_ne, src_nb, 4);
-            acl_tensor_ptr acl_state_f32 = ggml_cann_create_tensor((char *)dst->data + state_offset,
-                ACL_FLOAT, sizeof(float), s_ne, dst_nb, 4);
-            aclnn_cast(ctx, acl_state_f16.get(), acl_state_f32.get(), ACL_FLOAT);
+            // Copy ACLNN output state from device to host (F16)
+            std::vector<uint16_t> state_f16_host(state_elems);
+            ACL_CHECK(aclrtMemcpy(state_f16_host.data(), state_elems * sizeof(uint16_t), state_f16,
+                                  state_elems * sizeof(uint16_t), ACL_MEMCPY_DEVICE_TO_HOST));
+            // Transpose [V,K] -> [K,V] and cast F16 -> F32
+            std::vector<float> state_f32_transposed(state_elems);
+            for (int64_t s = 0; s < n_seqs; s++) {
+                for (int64_t h = 0; h < H; h++) {
+                    const uint16_t * src = state_f16_host.data() + (s * H + h) * S_v * S_v;
+                    float * dst = state_f32_transposed.data() + (s * H + h) * S_v * S_v;
+                    // src[i*S_v + j] = S[i][j] (V=outer, K=inner)
+                    // dst[j*S_v + i] = S[i][j] (K=outer, V=inner)
+                    for (int64_t i = 0; i < S_v; i++) {
+                        for (int64_t j = 0; j < S_v; j++) {
+                            dst[j * S_v + i] = ggml_fp16_to_fp32(src[i * S_v + j]);
+                        }
+                    }
+                }
+            }
+            // Upload transposed F32 state to dst
+            ACL_CHECK(aclrtMemcpy((char *)dst->data + state_offset, state_elems * sizeof(float),
+                                  state_f32_transposed.data(), state_elems * sizeof(float),
+                                  ACL_MEMCPY_HOST_TO_DEVICE));
         }
     }
 #else
