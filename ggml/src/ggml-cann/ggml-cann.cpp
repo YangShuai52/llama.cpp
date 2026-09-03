@@ -2010,6 +2010,11 @@ static bool ggml_cann_compute_forward(ggml_backend_cann_context & ctx, struct gg
         case GGML_OP_SSM_CONV:
             ggml_cann_ssm_conv(ctx, dst);
             break;
+#ifdef ASCEND_310P
+        case GGML_OP_GATED_DELTA_NET:
+            ggml_cann_gated_delta_net(ctx, dst);
+            break;
+#endif
         case GGML_OP_CUMSUM:
             ggml_cann_cumsum(ctx, dst);
             break;
@@ -2696,6 +2701,21 @@ static bool ggml_backend_cann_supports_op(ggml_backend_dev_t dev, const ggml_ten
             }
         case GGML_OP_SSM_CONV:
             return true;
+#ifdef ASCEND_310P
+        case GGML_OP_GATED_DELTA_NET:
+            {
+                // Only support decode path (K=1, n_tokens=1 per seq) with v310 op
+                int32_t K = ggml_get_op_params_i32(op, 0);
+                if (K != 1) return false;
+                const ggml_tensor * v = op->src[2];
+                if (!v || v->ne[2] != 1) return false;  // n_tokens == 1 (decode)
+                // All inputs must be F32
+                for (int i = 0; i < 6; i++) {
+                    if (!op->src[i] || op->src[i]->type != GGML_TYPE_F32) return false;
+                }
+                return true;
+            }
+#endif
         case GGML_OP_CUMSUM:
             return op->src[0]->type == GGML_TYPE_F32;
         case GGML_OP_TRI:

@@ -4467,6 +4467,202 @@ void ggml_cann_ssm_conv(ggml_backend_cann_context & ctx, ggml_tensor * dst) {
                             groups, acl_y.get(), cubeMathType);
 }
 
+// Gated Delta Net decode path using aclnnRecurrentGatedDeltaRuleV310
+// Implements the recurrent delta rule: S_t = g_t * S_{t-1} + beta_t * (v_t - S_{t-1} @ k_t) * k_t^T, o_t = S_t @ q_t
+// llama.cpp uses F32 for all tensors; ACLNN v310 requires F16 for q/k/v/beta/state and F32 for g
+void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * dst) {
+#ifdef ASCEND_310P
+    ggml_tensor * q     = dst->src[0];
+    ggml_tensor * k     = dst->src[1];
+    ggml_tensor * v     = dst->src[2];
+    ggml_tensor * g     = dst->src[3];
+    ggml_tensor * beta  = dst->src[4];
+    ggml_tensor * state = dst->src[5];
+
+    int32_t K = ggml_get_op_params_i32(dst, 0);
+    GGML_ASSERT(K == 1 && "CANN GDN: only K=1 supported with v310 op");
+
+    const int64_t S_v      = v->ne[0];
+    const int64_t H        = v->ne[1];
+    const int64_t n_tokens = v->ne[2];
+    const int64_t n_seqs   = v->ne[3];
+    const int64_t num_tokens = n_tokens * n_seqs;
+
+    GGML_ASSERT(n_tokens == 1 && "CANN GDN: v310 op only supports decode (n_tokens=1 per seq)");
+    GGML_ASSERT(q->type == GGML_TYPE_F32 && k->type == GGML_TYPE_F32 && v->type == GGML_TYPE_F32);
+    GGML_ASSERT(g->type == GGML_TYPE_F32 && beta->type == GGML_TYPE_F32 && state->type == GGML_TYPE_F32);
+
+    const float scale = 1.0f / sqrtf(float(S_v));
+
+    // --- Cast F32 inputs to F16 (q, k, v, beta) ---
+    // Data layout: ggml [S, H, 1, B] is contiguous with stride matching ACLNN [B, H, S] (reversed dims)
+    auto cast_f32_to_f16 = [&](ggml_tensor * src, void * dst_buf) {
+        acl_tensor_ptr acl_src = ggml_cann_create_tensor(src);
+        size_t elem_size = sizeof(uint16_t);
+        int64_t ne[GGML_MAX_DIMS];
+        size_t  nb[GGML_MAX_DIMS];
+        memcpy(ne, src->ne, sizeof(ne));
+        nb[0] = elem_size;
+        for (int i = 1; i < GGML_MAX_DIMS; i++) {
+            nb[i] = nb[i - 1] * ne[i - 1];
+        }
+        acl_tensor_ptr acl_dst = ggml_cann_create_tensor(dst_buf, ACL_FLOAT16, elem_size, ne, nb, GGML_MAX_DIMS);
+        aclnn_cast(ctx, acl_src.get(), acl_dst.get(), ACL_FLOAT16);
+    };
+
+    size_t qkv_elems = ggml_nelements(q);
+    ggml_cann_pool_alloc q_f16_alloc(ctx.pool());
+    void * q_f16 = q_f16_alloc.alloc(qkv_elems * sizeof(uint16_t));
+    cast_f32_to_f16(q, q_f16);
+
+    ggml_cann_pool_alloc k_f16_alloc(ctx.pool());
+    void * k_f16 = k_f16_alloc.alloc(qkv_elems * sizeof(uint16_t));
+    cast_f32_to_f16(k, k_f16);
+
+    ggml_cann_pool_alloc v_f16_alloc(ctx.pool());
+    void * v_f16 = v_f16_alloc.alloc(qkv_elems * sizeof(uint16_t));
+    cast_f32_to_f16(v, v_f16);
+
+    // beta: [1, H, 1, B], total elements = H * B
+    size_t beta_elems = ggml_nelements(beta);
+    ggml_cann_pool_alloc beta_f16_alloc(ctx.pool());
+    void * beta_f16 = beta_f16_alloc.alloc(beta_elems * sizeof(uint16_t));
+    cast_f32_to_f16(beta, beta_f16);
+
+    // --- Cast state F32 -> F16 ---
+    // state: [S_v, S_v, H, n_seqs] -> ACLNN [n_seqs, H, S_v, S_v] (num_slots=n_seqs)
+    size_t state_elems = ggml_nelements(state);
+    ggml_cann_pool_alloc state_f16_alloc(ctx.pool());
+    void * state_f16 = state_f16_alloc.alloc(state_elems * sizeof(uint16_t));
+    {
+        acl_tensor_ptr acl_src = ggml_cann_create_tensor(state);
+        size_t elem_size = sizeof(uint16_t);
+        size_t nb[GGML_MAX_DIMS];
+        nb[0] = elem_size;
+        for (int i = 1; i < GGML_MAX_DIMS; i++) {
+            nb[i] = nb[i - 1] * state->ne[i - 1];
+        }
+        acl_tensor_ptr acl_dst = ggml_cann_create_tensor(state_f16, ACL_FLOAT16, elem_size, state->ne, nb, GGML_MAX_DIMS);
+        aclnn_cast(ctx, acl_src.get(), acl_dst.get(), ACL_FLOAT16);
+    }
+
+    // --- Create ACL tensors with correct shapes for v310 API ---
+    // q/k/v: [num_tokens, H, S_v] = [n_seqs, H, S_v] (3D, squeeze n_tokens=1)
+    auto make_3d_acl_tensor = [](void * data, int64_t d0, int64_t d1, int64_t d2) {
+        // ggml ne order: [d0, d1, d2] -> ACL reversed: [d2, d1, d0]
+        int64_t ne[] = { d0, d1, d2, 1 };
+        size_t nb[4];
+        nb[0] = sizeof(uint16_t);
+        nb[1] = nb[0] * ne[0];
+        nb[2] = nb[1] * ne[1];
+        nb[3] = nb[2] * ne[2];
+        return ggml_cann_create_tensor(data, ACL_FLOAT16, sizeof(uint16_t), ne, nb, 3);
+    };
+
+    acl_tensor_ptr acl_q   = make_3d_acl_tensor(q_f16,   S_v, H, n_seqs);
+    acl_tensor_ptr acl_k   = make_3d_acl_tensor(k_f16,   S_v, H, n_seqs);
+    acl_tensor_ptr acl_v   = make_3d_acl_tensor(v_f16,   S_v, H, n_seqs);
+    // beta/g: [1, num_tokens, H] = [1, n_seqs, H] (3D)
+    auto make_gd_acl_tensor = [](void * data, aclDataType dtype, size_t elem_size, int64_t n_tokens, int64_t H) {
+        int64_t ne[] = { 1, H, n_tokens, 1 };
+        size_t nb[4];
+        nb[0] = elem_size;
+        nb[1] = nb[0] * ne[0];
+        nb[2] = nb[1] * ne[1];
+        nb[3] = nb[2] * ne[2];
+        return ggml_cann_create_tensor(data, dtype, elem_size, ne, nb, 3);
+    };
+    acl_tensor_ptr acl_beta = make_gd_acl_tensor(beta_f16, ACL_FLOAT16, sizeof(uint16_t), n_seqs, H);
+    acl_tensor_ptr acl_g    = make_gd_acl_tensor(g->data, ACL_FLOAT, sizeof(float), n_seqs, H);
+
+    // state: [num_slots, H, S_v, S_v] = [n_seqs, H, S_v, S_v] (4D)
+    {
+        int64_t ne[] = { S_v, S_v, H, n_seqs };
+        size_t nb[4];
+        nb[0] = sizeof(uint16_t);
+        nb[1] = nb[0] * ne[0];
+        nb[2] = nb[1] * ne[1];
+        nb[3] = nb[2] * ne[2];
+        acl_tensor_ptr acl_state = ggml_cann_create_tensor(state_f16, ACL_FLOAT16, sizeof(uint16_t), ne, nb, 4);
+
+        // actualSeqLengths: [n_seqs] = [1, 1, ..., 1]
+        std::vector<int32_t> seq_lens(n_seqs, 1);
+        acl_tensor_ptr acl_seq_lens = ggml_cann_create_tensor(seq_lens.data(), ACL_INT32, sizeof(int32_t),
+                                                              (int64_t[]){ n_seqs }, (size_t[]){ sizeof(int32_t) }, 1);
+
+        // ssmStateIndices: [num_tokens] = [0, 1, 2, ..., n_seqs-1]
+        std::vector<int32_t> state_indices(n_seqs);
+        for (int64_t i = 0; i < n_seqs; i++) state_indices[i] = (int32_t) i;
+        acl_tensor_ptr acl_state_indices = ggml_cann_create_tensor(state_indices.data(), ACL_INT32, sizeof(int32_t),
+                                                                   (int64_t[]){ n_seqs }, (size_t[]){ sizeof(int32_t) }, 1);
+
+        // output: [num_tokens, H, S_v] fp16
+        ggml_cann_pool_alloc out_f16_alloc(ctx.pool());
+        void * out_f16 = out_f16_alloc.alloc(num_tokens * H * S_v * sizeof(uint16_t));
+        acl_tensor_ptr acl_out = make_3d_acl_tensor(out_f16, S_v, H, n_seqs);
+
+        // Call aclnnRecurrentGatedDeltaRuleV310
+        // gk = nullptr, numAcceptedTokens = nullptr (no spec decode)
+        GGML_CANN_CALL_ACLNN_OP(ctx, RecurrentGatedDeltaRuleV310,
+                                acl_q.get(), acl_k.get(), acl_v.get(), acl_beta.get(),
+                                acl_state.get(),
+                                acl_seq_lens.get(), acl_state_indices.get(),
+                                acl_g.get(), nullptr,
+                                nullptr, scale,
+                                acl_out.get());
+
+        // --- Cast output F16 -> F32 ---
+        // Output is written to the first n_tokens*n_seqs rows of dst
+        // dst ne: [S_v*H, n_tokens*n_seqs + K*S_v*n_seqs, 1, 1]
+        // Output portion: first n_tokens*n_seqs = n_seqs rows, each S_v*H elements
+        size_t out_elems = num_tokens * S_v * H;
+        {
+            int64_t out_ne[] = { S_v * H, num_tokens, 1, 1 };
+            size_t out_nb[4];
+            out_nb[0] = sizeof(uint16_t);
+            out_nb[1] = out_nb[0] * out_ne[0];
+            out_nb[2] = out_nb[1] * out_ne[1];
+            out_nb[3] = out_nb[2] * out_ne[2];
+            acl_tensor_ptr acl_out_f16 = ggml_cann_create_tensor(out_f16, ACL_FLOAT16, sizeof(uint16_t), out_ne, out_nb, 2);
+
+            // dst output region: first n_seqs rows
+            size_t dst_nb[4];
+            dst_nb[0] = sizeof(float);
+            dst_nb[1] = dst_nb[0] * (S_v * H);
+            dst_nb[2] = dst_nb[1] * num_tokens;
+            dst_nb[3] = dst_nb[2] * 1;
+            acl_tensor_ptr acl_out_f32 = ggml_cann_create_tensor(dst->data, ACL_FLOAT, sizeof(float),
+                                                                 (int64_t[]){ S_v * H, num_tokens, 1, 1 }, dst_nb, 2);
+            aclnn_cast(ctx, acl_out_f16.get(), acl_out_f32.get(), ACL_FLOAT);
+        }
+
+        // --- Cast updated state F16 -> F32 ---
+        // State is written to the state portion of dst (after output rows)
+        size_t state_offset = S_v * H * num_tokens * sizeof(float);
+        {
+            int64_t s_ne[] = { S_v, S_v, H, n_seqs };
+            size_t s_nb[4];
+            s_nb[0] = sizeof(uint16_t);
+            s_nb[1] = s_nb[0] * s_ne[0];
+            s_nb[2] = s_nb[1] * s_ne[1];
+            s_nb[3] = s_nb[2] * s_ne[2];
+            acl_tensor_ptr acl_state_f16 = ggml_cann_create_tensor(state_f16, ACL_FLOAT16, sizeof(uint16_t), s_ne, s_nb, 4);
+
+            size_t dst_s_nb[4];
+            dst_s_nb[0] = sizeof(float);
+            dst_s_nb[1] = dst_s_nb[0] * S_v;
+            dst_s_nb[2] = dst_s_nb[1] * S_v;
+            dst_s_nb[3] = dst_s_nb[2] * H;
+            acl_tensor_ptr acl_state_f32 = ggml_cann_create_tensor((char *)dst->data + state_offset,
+                ACL_FLOAT, sizeof(float), s_ne, dst_s_nb, 4);
+            aclnn_cast(ctx, acl_state_f16.get(), acl_state_f32.get(), ACL_FLOAT);
+        }
+    }
+#else
+    GGML_ABORT("CANN GDN v310 op only supported on ASCEND_310P");
+#endif
+}
+
 void ggml_cann_op_add_rms_norm_fused(ggml_backend_cann_context & ctx,
                                      ggml_tensor *               add_node,
                                      ggml_tensor *               rms_norm_node) {

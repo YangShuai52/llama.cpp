@@ -58,6 +58,13 @@
 #include <aclnnop/aclnn_tanh.h>
 #include <aclnnop/aclnn_ascend_quant.h>
 #include <aclnnop/aclnn_quant_matmul_v4.h>
+#include <aclnnop/aclnn_recurrent_gated_delta_rule.h>
+#ifdef ASCEND_310P
+#include <aclnnop/aclnn_recurrent_gated_delta_rule_v310.h>
+#include <aclnnop/aclnn_causal_conv1d_v310.h>
+#include <aclnnop/aclnn_chunk_gated_delta_rule_fwd_h.h>
+#include <aclnnop/aclnn_chunk_fwd_o.h>
+#endif
 
 #include <functional>
 #include <unordered_set>
@@ -1081,6 +1088,9 @@ void ggml_cann_op_unary(std::function<void(ggml_backend_cann_context &, aclTenso
                         ggml_tensor *                                                              dst);
 
 void ggml_cann_ssm_conv(ggml_backend_cann_context & ctx, ggml_tensor * dst);
+
+// Gated Delta Net: decode path using aclnnRecurrentGatedDeltaRuleV310 (310P)
+void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * dst);
 
 /**
  * @brief Applies a gated (GLU-style) unary operation using the CANN backend.

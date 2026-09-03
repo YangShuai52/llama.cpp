@@ -59,6 +59,32 @@ if (CANN_INSTALL_DIR)
         ${CANN_INSTALL_DIR}/acllib/include
     )
 
+    # Custom transformer ops (v310 GDN, conv1d, etc.) from vllm-ascend
+    set(CANN_CUSTOM_OP_DIR "" CACHE PATH "Path to custom transformer ops (contains vendors/custom_transformer)")
+    if(NOT CANN_CUSTOM_OP_DIR)
+        file(GLOB CANN_CUSTOM_OP_DIR_CANDIDATES
+            /vllm-workspace/vllm-ascend/vllm_ascend/_cann_ops_custom
+            /usr/local/Ascend/opp/vendors/custom_transformer
+        )
+        foreach(dir ${CANN_CUSTOM_OP_DIR_CANDIDATES})
+            if(EXISTS "${dir}/vendors/custom_transformer/op_api/include/aclnnop")
+                set(CANN_CUSTOM_OP_DIR ${dir})
+                message(STATUS "CANN: Found custom transformer ops at ${CANN_CUSTOM_OP_DIR}")
+                break()
+            endif()
+        endforeach()
+    endif()
+    if(CANN_CUSTOM_OP_DIR AND EXISTS "${CANN_CUSTOM_OP_DIR}/vendors/custom_transformer/op_api/include/aclnnop")
+        list(APPEND CANN_INCLUDE_DIRS
+            ${CANN_CUSTOM_OP_DIR}/vendors/custom_transformer/op_api/include
+        )
+        set(CANN_CUSTOM_OP_LIB ${CANN_CUSTOM_OP_DIR}/vendors/custom_transformer/op_api/lib/libcust_opapi.so)
+        message(STATUS "CANN: Custom op include: ${CANN_CUSTOM_OP_DIR}/vendors/custom_transformer/op_api/include")
+        message(STATUS "CANN: Custom op lib: ${CANN_CUSTOM_OP_LIB}")
+    else()
+        message(WARNING "CANN: Custom transformer ops not found. GDN v310 ops will not be available.")
+    endif()
+
     list(APPEND CANN_LIBRARIES
         ascendcl
         nnopbase
@@ -72,6 +98,9 @@ if (CANN_INSTALL_DIR)
     target_link_libraries(ggml-cann PRIVATE ${CANN_LIBRARIES})
     target_include_directories(ggml-cann PRIVATE ${CANN_INCLUDE_DIRS})
     target_link_directories(ggml-cann PRIVATE ${CANN_INSTALL_DIR}/lib64)
+    if(CANN_CUSTOM_OP_LIB)
+        target_link_libraries(ggml-cann PRIVATE ${CANN_CUSTOM_OP_LIB})
+    endif()
 
     target_compile_definitions(ggml-cann PRIVATE "-D${SOC_TYPE_COMPILE_OPTION}")
 
