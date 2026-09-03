@@ -4562,9 +4562,11 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
     acl_tensor_ptr acl_q   = make_3d_acl_tensor(q_f16,   S_v, H, n_seqs);
     acl_tensor_ptr acl_k   = make_3d_acl_tensor(k_f16,   S_v, H, n_seqs);
     acl_tensor_ptr acl_v   = make_3d_acl_tensor(v_f16,   S_v, H, n_seqs);
-    // beta/g: [1, num_tokens, H] = [1, n_seqs, H] (3D)
+    // beta/g: ACLNN expects [1, num_tokens, H] = [1, n_seqs, H] (3D)
+    // In ggml ne order (reversed for ACL): ne = [H, n_seqs, 1] -> ACL shape [1, n_seqs, H]
+    // Data layout: element (h, b) at offset h + b*H, which matches ACL (0, b, h) at b*H + h
     auto make_gd_acl_tensor = [](void * data, aclDataType dtype, size_t elem_size, int64_t n_tokens, int64_t H) {
-        int64_t ne[] = { 1, H, n_tokens, 1 };
+        int64_t ne[] = { H, n_tokens, 1, 1 };
         size_t nb[4];
         nb[0] = elem_size;
         nb[1] = nb[0] * ne[0];
@@ -4585,19 +4587,27 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
         nb[3] = nb[2] * ne[2];
         acl_tensor_ptr acl_state = ggml_cann_create_tensor(state_f16, ACL_FLOAT16, sizeof(uint16_t), ne, nb, 4);
 
-        // actualSeqLengths: [n_seqs] = [1, 1, ..., 1]
+        // actualSeqLengths: [n_seqs] = [1, 1, ..., 1] (must be on device)
         std::vector<int32_t> seq_lens(n_seqs, 1);
+        ggml_cann_pool_alloc seq_lens_alloc(ctx.pool());
+        void * seq_lens_dev = seq_lens_alloc.alloc(n_seqs * sizeof(int32_t));
+        ACL_CHECK(aclrtMemcpy(seq_lens_dev, n_seqs * sizeof(int32_t), seq_lens.data(),
+                              n_seqs * sizeof(int32_t), ACL_MEMCPY_HOST_TO_DEVICE));
         int64_t seq_lens_ne[] = { n_seqs };
         size_t seq_lens_nb[] = { sizeof(int32_t) };
-        acl_tensor_ptr acl_seq_lens = ggml_cann_create_tensor(seq_lens.data(), ACL_INT32, sizeof(int32_t),
+        acl_tensor_ptr acl_seq_lens = ggml_cann_create_tensor(seq_lens_dev, ACL_INT32, sizeof(int32_t),
                                                               seq_lens_ne, seq_lens_nb, 1);
 
-        // ssmStateIndices: [num_tokens] = [0, 1, 2, ..., n_seqs-1]
+        // ssmStateIndices: [num_tokens] = [0, 1, 2, ..., n_seqs-1] (must be on device)
         std::vector<int32_t> state_indices(n_seqs);
         for (int64_t i = 0; i < n_seqs; i++) state_indices[i] = (int32_t) i;
+        ggml_cann_pool_alloc si_alloc(ctx.pool());
+        void * si_dev = si_alloc.alloc(n_seqs * sizeof(int32_t));
+        ACL_CHECK(aclrtMemcpy(si_dev, n_seqs * sizeof(int32_t), state_indices.data(),
+                              n_seqs * sizeof(int32_t), ACL_MEMCPY_HOST_TO_DEVICE));
         int64_t si_ne[] = { n_seqs };
         size_t si_nb[] = { sizeof(int32_t) };
-        acl_tensor_ptr acl_state_indices = ggml_cann_create_tensor(state_indices.data(), ACL_INT32, sizeof(int32_t),
+        acl_tensor_ptr acl_state_indices = ggml_cann_create_tensor(si_dev, ACL_INT32, sizeof(int32_t),
                                                                    si_ne, si_nb, 1);
 
         // output: [num_tokens, H, S_v] fp16
