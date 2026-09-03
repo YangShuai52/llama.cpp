@@ -4553,11 +4553,11 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
         // Transpose dims 0 and 1: [S_v, S_v, H, n_seqs] -> [S_v, S_v, H, n_seqs] (swapped)
         // Source: ne=[S_v, S_v, H, n_seqs], nb=[2, 2*S_v, 2*S_v*S_v, ...]
         // Dst:   ne=[S_v, S_v, H, n_seqs], nb=[2, 2*S_v, 2*S_v*S_v, ...] but with src/dst dims swapped
-        // We use aclnnTranspose to swap dim 0 and dim 1
+        // We use aclnnPermute to swap dim 0 and dim 1
         acl_tensor_ptr acl_dst = ggml_cann_create_tensor(state_f16, ACL_FLOAT16, elem_size, state->ne, nb, GGML_MAX_DIMS);
         int64_t perm[] = {1, 0, 2, 3};  // swap dim 0 and 1
         acl_int_array_ptr perm_arr = ggml_cann_create_int_array(perm, 4);
-        GGML_CANN_CALL_ACLNN_OP(ctx, Transpose, acl_tmp.get(), perm_arr.get(), acl_dst.get());
+        GGML_CANN_CALL_ACLNN_OP(ctx, Permute, acl_tmp.get(), perm_arr.get(), acl_dst.get());
     }
 
     // --- Create ACL tensors with correct shapes for v310 API ---
@@ -4680,7 +4680,7 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
             acl_tensor_ptr acl_state_t  = ggml_cann_create_tensor(state_t, ACL_FLOAT16, sizeof(uint16_t), s_ne, s_nb, 4);
             int64_t perm[] = {1, 0, 2, 3};
             acl_int_array_ptr perm_arr = ggml_cann_create_int_array(perm, 4);
-            GGML_CANN_CALL_ACLNN_OP(ctx, Transpose, acl_state_src.get(), perm_arr.get(), acl_state_t.get());
+            GGML_CANN_CALL_ACLNN_OP(ctx, Permute, acl_state_src.get(), perm_arr.get(), acl_state_t.get());
 
             // Cast transposed F16 -> F32 into dst
             size_t dst_s_nb[4];
