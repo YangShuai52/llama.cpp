@@ -4587,14 +4587,18 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
 
         // actualSeqLengths: [n_seqs] = [1, 1, ..., 1]
         std::vector<int32_t> seq_lens(n_seqs, 1);
+        int64_t seq_lens_ne[] = { n_seqs };
+        size_t seq_lens_nb[] = { sizeof(int32_t) };
         acl_tensor_ptr acl_seq_lens = ggml_cann_create_tensor(seq_lens.data(), ACL_INT32, sizeof(int32_t),
-                                                              (int64_t[]){ n_seqs }, (size_t[]){ sizeof(int32_t) }, 1);
+                                                              seq_lens_ne, seq_lens_nb, 1);
 
         // ssmStateIndices: [num_tokens] = [0, 1, 2, ..., n_seqs-1]
         std::vector<int32_t> state_indices(n_seqs);
         for (int64_t i = 0; i < n_seqs; i++) state_indices[i] = (int32_t) i;
+        int64_t si_ne[] = { n_seqs };
+        size_t si_nb[] = { sizeof(int32_t) };
         acl_tensor_ptr acl_state_indices = ggml_cann_create_tensor(state_indices.data(), ACL_INT32, sizeof(int32_t),
-                                                                   (int64_t[]){ n_seqs }, (size_t[]){ sizeof(int32_t) }, 1);
+                                                                   si_ne, si_nb, 1);
 
         // output: [num_tokens, H, S_v] fp16
         ggml_cann_pool_alloc out_f16_alloc(ctx.pool());
@@ -4613,9 +4617,6 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
 
         // --- Cast output F16 -> F32 ---
         // Output is written to the first n_tokens*n_seqs rows of dst
-        // dst ne: [S_v*H, n_tokens*n_seqs + K*S_v*n_seqs, 1, 1]
-        // Output portion: first n_tokens*n_seqs = n_seqs rows, each S_v*H elements
-        size_t out_elems = num_tokens * S_v * H;
         {
             int64_t out_ne[] = { S_v * H, num_tokens, 1, 1 };
             size_t out_nb[4];
@@ -4626,13 +4627,14 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
             acl_tensor_ptr acl_out_f16 = ggml_cann_create_tensor(out_f16, ACL_FLOAT16, sizeof(uint16_t), out_ne, out_nb, 2);
 
             // dst output region: first n_seqs rows
+            int64_t dst_out_ne[] = { S_v * H, num_tokens, 1, 1 };
             size_t dst_nb[4];
             dst_nb[0] = sizeof(float);
             dst_nb[1] = dst_nb[0] * (S_v * H);
             dst_nb[2] = dst_nb[1] * num_tokens;
             dst_nb[3] = dst_nb[2] * 1;
             acl_tensor_ptr acl_out_f32 = ggml_cann_create_tensor(dst->data, ACL_FLOAT, sizeof(float),
-                                                                 (int64_t[]){ S_v * H, num_tokens, 1, 1 }, dst_nb, 2);
+                                                                 dst_out_ne, dst_nb, 2);
             aclnn_cast(ctx, acl_out_f16.get(), acl_out_f32.get(), ACL_FLOAT);
         }
 
