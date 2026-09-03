@@ -59,10 +59,42 @@ if (CANN_INSTALL_DIR)
         ${CANN_INSTALL_DIR}/acllib/include
     )
 
-    # Custom transformer ops (v310 GDN, conv1d, etc.) from vllm-ascend
+    # Custom transformer ops (v310 GDN, conv1d, etc.)
+    # Option 1: Set CANN_CUSTOM_OP_DIR to a pre-installed vendor directory
+    # Option 2: Set CANN_BUILD_CUSTOM_OPS=ON to build from source in custom_ops/
     set(CANN_CUSTOM_OP_DIR "" CACHE PATH "Path to custom transformer ops (contains vendors/custom_transformer)")
+    option(CANN_BUILD_CUSTOM_OPS "Build custom transformer ops from source" OFF)
+
+    if(CANN_BUILD_CUSTOM_OPS)
+        # Build custom ops from source using build_custom_ops.sh
+        set(CUSTOM_OPS_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/custom_ops)
+        set(CUSTOM_OPS_INSTALL_DIR ${CMAKE_BINARY_DIR}/custom_ops_install)
+        set(CANN_CUSTOM_OP_DIR ${CUSTOM_OPS_INSTALL_DIR})
+
+        if(EXISTS ${CUSTOM_OPS_SRC_DIR}/recurrent_gated_delta_rule_v310)
+            message(STATUS "CANN: Building custom ops from source at ${CUSTOM_OPS_SRC_DIR}")
+            find_program(BASH_EXEC bash REQUIRED)
+            execute_process(
+                COMMAND ${BASH_EXEC} ${CUSTOM_OPS_SRC_DIR}/build_custom_ops.sh
+                        ${CUSTOM_OPS_SRC_DIR} ${CUSTOM_OPS_INSTALL_DIR} ${SOC_VERSION}
+                RESULT_VARIABLE BUILD_RESULT
+                OUTPUT_VARIABLE BUILD_OUTPUT
+                ERROR_VARIABLE BUILD_OUTPUT
+            )
+            if(NOT BUILD_RESULT EQUAL 0)
+                message(WARNING "CANN: Custom ops build failed (code ${BUILD_RESULT}). Falling back.")
+                message("${BUILD_OUTPUT}")
+            else()
+                message(STATUS "CANN: Custom ops built and installed to ${CUSTOM_OPS_INSTALL_DIR}")
+            endif()
+        else()
+            message(STATUS "CANN: No custom_ops source directory found, skipping build")
+        endif()
+    endif()
+
     if(NOT CANN_CUSTOM_OP_DIR)
         file(GLOB CANN_CUSTOM_OP_DIR_CANDIDATES
+            ${CMAKE_BINARY_DIR}/custom_ops_install
             /vllm-workspace/vllm-ascend/vllm_ascend/_cann_ops_custom
             /usr/local/Ascend/opp/vendors/custom_transformer
         )
@@ -81,6 +113,8 @@ if (CANN_INSTALL_DIR)
         set(CANN_CUSTOM_OP_LIB ${CANN_CUSTOM_OP_DIR}/vendors/custom_transformer/op_api/lib/libcust_opapi.so)
         message(STATUS "CANN: Custom op include: ${CANN_CUSTOM_OP_DIR}/vendors/custom_transformer/op_api/include")
         message(STATUS "CANN: Custom op lib: ${CANN_CUSTOM_OP_LIB}")
+        # Set RPATH so the .so is found at runtime without LD_LIBRARY_PATH
+        set(CANN_CUSTOM_OP_RPATH ${CANN_CUSTOM_OP_DIR}/vendors/custom_transformer/op_api/lib)
     else()
         message(WARNING "CANN: Custom transformer ops not found. GDN v310 ops will not be available.")
     endif()
@@ -100,6 +134,9 @@ if (CANN_INSTALL_DIR)
     target_link_directories(ggml-cann PRIVATE ${CANN_INSTALL_DIR}/lib64)
     if(CANN_CUSTOM_OP_LIB)
         target_link_libraries(ggml-cann PRIVATE ${CANN_CUSTOM_OP_LIB})
+    endif()
+    if(CANN_CUSTOM_OP_RPATH)
+        set_target_properties(ggml-cann PROPERTIES BUILD_RPATH "${CANN_CUSTOM_OP_RPATH}")
     endif()
 
     target_compile_definitions(ggml-cann PRIVATE "-D${SOC_TYPE_COMPILE_OPTION}")
