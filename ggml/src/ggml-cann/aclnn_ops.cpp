@@ -4562,9 +4562,8 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
     acl_tensor_ptr acl_q   = make_3d_acl_tensor(q_f16,   S_v, H, n_seqs);
     acl_tensor_ptr acl_k   = make_3d_acl_tensor(k_f16,   S_v, H, n_seqs);
     acl_tensor_ptr acl_v   = make_3d_acl_tensor(v_f16,   S_v, H, n_seqs);
-    // beta/g: ACLNN expects [1, num_tokens, H] = [1, n_seqs, H] (3D)
-    // In ggml ne order (reversed for ACL): ne = [H, n_seqs, 1] -> ACL shape [1, n_seqs, H]
-    // Data layout: element (h, b) at offset h + b*H, which matches ACL (0, b, h) at b*H + h
+    // beta/g: ACLNN expects 2D [num_tokens, H]
+    // In ggml ne order (reversed for ACL): ne = [H, n_tokens] -> ACL shape [n_tokens, H]
     auto make_gd_acl_tensor = [](void * data, aclDataType dtype, size_t elem_size, int64_t n_tokens, int64_t H) {
         int64_t ne[] = { H, n_tokens, 1, 1 };
         size_t nb[4];
@@ -4572,7 +4571,7 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
         nb[1] = nb[0] * ne[0];
         nb[2] = nb[1] * ne[1];
         nb[3] = nb[2] * ne[2];
-        return ggml_cann_create_tensor(data, dtype, elem_size, ne, nb, 3);
+        return ggml_cann_create_tensor(data, dtype, elem_size, ne, nb, 2);
     };
     acl_tensor_ptr acl_beta = make_gd_acl_tensor(beta_f16, ACL_FLOAT16, sizeof(uint16_t), n_seqs, H);
     acl_tensor_ptr acl_g    = make_gd_acl_tensor(g->data, ACL_FLOAT, sizeof(float), n_seqs, H);
