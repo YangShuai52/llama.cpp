@@ -4541,6 +4541,9 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
         std::vector<float> state_host(state_elems);
         ACL_CHECK(aclrtMemcpy(state_host.data(), state_elems * sizeof(float), state->data,
                               state_elems * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST));
+        // Debug: print first few state values
+        fprintf(stderr, "[GDN] state[0..4]: %f %f %f %f | S_v=%ld H=%ld n_seqs=%ld\n",
+                state_host[0], state_host[1], state_host[2], state_host[3], (long)S_v, (long)H, (long)n_seqs);
         // Step 2: Transpose [K, V, H, N] -> [V, K, H, N] and cast to F16
         // For each head h and seq s: transpose S_v x S_v matrix
         std::vector<uint16_t> state_transposed(state_elems);
