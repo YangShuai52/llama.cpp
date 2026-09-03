@@ -4577,10 +4577,17 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
     // Compute exp(g) on host and upload to device.
     size_t g_elems = ggml_nelements(g);
     std::vector<float> g_host(g_elems);
-    // g may be in device or host memory depending on where it was computed
-    aclrtMemcpyKind g_kind = ggml_backend_buffer_is_host(g->buffer) ? ACL_MEMCPY_HOST_TO_HOST : ACL_MEMCPY_DEVICE_TO_HOST;
-    ACL_CHECK(aclrtMemcpy(g_host.data(), g_elems * sizeof(float), g->data,
-                          g_elems * sizeof(float), g_kind));
+    // Try D2H first; if it fails, the tensor might be in host memory
+    aclError err = aclrtMemcpy(g_host.data(), g_elems * sizeof(float), g->data,
+                               g_elems * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST);
+    if (err != ACL_SUCCESS) {
+        // Fallback: try H2H copy (tensor might be in pinned host memory)
+        err = aclrtMemcpy(g_host.data(), g_elems * sizeof(float), g->data,
+                          g_elems * sizeof(float), ACL_MEMCPY_HOST_TO_HOST);
+    }
+    if (err != ACL_SUCCESS) {
+        GGML_ABORT("Failed to copy g tensor for exp computation");
+    }
     for (size_t i = 0; i < g_elems; i++) {
         g_host[i] = expf(g_host[i]);
     }
