@@ -1539,6 +1539,39 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     return res;
 }
 
+ggml_tensor * llm_graph_context::build_lora_mm_quant(
+          ggml_tensor * w,
+          ggml_tensor * deq_scale,
+          ggml_tensor * input_offset,
+          ggml_tensor * input_scale,
+          ggml_tensor * quant_bias,
+          ggml_tensor * weight_offset,
+          ggml_tensor * weight_scale,
+          ggml_tensor * cur) const {
+    ggml_tensor * res = ggml_mul_mat_quant(ctx0, w, deq_scale, input_offset, input_scale,
+                                     quant_bias, weight_offset, weight_scale, cur);
+
+    for (const auto & lora : *loras) {
+        llama_adapter_lora_weight * lw = lora.first->get_weight(w);
+        if (lw == nullptr) {
+            continue;
+        }
+
+        const float adapter_scale = lora.second;
+        const float scale = lw->get_scale(lora.first->alpha, adapter_scale);
+
+        ggml_tensor * ab_cur = ggml_mul_mat(
+                ctx0, lw->b,
+                ggml_mul_mat(ctx0, lw->a, cur)
+                );
+
+        ab_cur = ggml_scale(ctx0, ab_cur, scale);
+        res = ggml_add(ctx0, res, ab_cur);
+    }
+
+    return res;
+}
+
 ggml_tensor * llm_graph_context::build_lora_mm_id(
           ggml_tensor * w,   // ggml_tensor * as
           ggml_tensor * cur, // ggml_tensor * b

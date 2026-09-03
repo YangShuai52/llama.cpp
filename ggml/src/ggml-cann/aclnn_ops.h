@@ -56,6 +56,8 @@
 #include <aclnnop/aclnn_slice.h>
 #include <aclnnop/aclnn_sqrt.h>
 #include <aclnnop/aclnn_tanh.h>
+#include <aclnnop/aclnn_ascend_quant.h>
+#include <aclnnop/aclnn_quant_matmul_v4.h>
 
 #include <functional>
 #include <unordered_set>
@@ -989,12 +991,16 @@ void ggml_cann_op_add_rms_norm_fused(ggml_backend_cann_context & ctx,
 static bool is_matmul_weight(const ggml_tensor * tensor) {
     std::string                                  name = ggml_get_name(tensor);
     static const std::unordered_set<std::string> weight_suffixes{ "output.weight",      "attn_q.weight",
-                                                                  "attn_k.weight",      "attn_v.weight",
-                                                                  "attn_output.weight", "ffn_gate.weight",
-                                                                  "ffn_up.weight",      "ffn_down.weight" };
+                                                                   "attn_k.weight",      "attn_v.weight",
+                                                                   "attn_output.weight", "ffn_gate.weight",
+                                                                   "ffn_up.weight",      "ffn_down.weight" };
 
     for (const auto & suffix : weight_suffixes) {
-        if (name.find(suffix) != std::string::npos) {
+        const size_t suffix_len = suffix.size();
+        if (name.size() < suffix_len) {
+            continue;
+        }
+        if (name.compare(name.size() - suffix_len, suffix_len, suffix) == 0) {
             return true;
         }
     }

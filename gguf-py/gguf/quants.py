@@ -59,6 +59,12 @@ def quantize(data: np.ndarray, qtype: GGMLQuantizationType) -> np.ndarray:
         return data.astype(np.float32, copy=False)
     elif qtype == GGMLQuantizationType.F16:
         return data.astype(np.float16, copy=False)
+    elif qtype == GGMLQuantizationType.I8:
+        return data.astype(np.int8, copy=False)
+    elif qtype == GGMLQuantizationType.I32:
+        return data.astype(np.int32, copy=False)
+    elif qtype == GGMLQuantizationType.I64:
+        return data.astype(np.int64, copy=False)
     elif (q := _type_traits.get(qtype)) is not None:
         return q.quantize(data)
     else:

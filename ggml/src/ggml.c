@@ -3303,6 +3303,35 @@ struct ggml_tensor * ggml_mul_mat(
     return result;
 }
 
+struct ggml_tensor * ggml_mul_mat_quant(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,
+        struct ggml_tensor  * deq_scale,
+        struct ggml_tensor  * input_offset,
+        struct ggml_tensor  * input_scale,
+        struct ggml_tensor  * quant_bias,
+        struct ggml_tensor  * weight_offset,
+        struct ggml_tensor  * weight_scale,
+        struct ggml_tensor  * b) {
+    GGML_ASSERT(ggml_can_mul_mat(a, b));
+    GGML_ASSERT(!ggml_is_transposed(a));
+
+    const int64_t ne[4] = { a->ne[1], b->ne[1], b->ne[2], b->ne[3] };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    result->op     = GGML_OP_MUL_MAT;
+    result->src[0] = a;
+    result->src[1] = b;
+    result->src[2] = deq_scale;
+    result->src[3] = input_offset;
+    result->src[4] = input_scale;
+    result->src[5] = quant_bias;
+    result->src[6] = weight_offset;
+    result->src[7] = weight_scale;
+
+    return result;
+}
+
 void ggml_mul_mat_set_prec(
         struct ggml_tensor * a,
         enum ggml_prec       prec) {

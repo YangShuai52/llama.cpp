@@ -2400,6 +2400,114 @@ static void ggml_cann_mul_mat_quant(ggml_backend_cann_context & ctx, ggml_tensor
     }
 }
 
+// W8A8 quantized matmul for msmodelslim format
+// weight: int8 (FRACTAL_NZ layout, converted during buffer set)
+// input: fp32, dynamically quantized to int8 via AscendQuant
+// output: fp32 (cast from fp16)
+static void ggml_cann_w8a8_mul_mat_quant(ggml_backend_cann_context & ctx, ggml_tensor * dst) {
+    ggml_tensor * weight       = dst->src[0];
+    ggml_tensor * input        = dst->src[1];
+    ggml_tensor * deq_scale    = dst->src[2];
+    ggml_tensor * input_offset = dst->src[3];
+    ggml_tensor * input_scale  = dst->src[4];
+    ggml_tensor * quant_bias   = dst->src[5];
+
+    GGML_ASSERT(weight->type == GGML_TYPE_I8);
+
+    // Step 1: quantize input from fp32 to int8 via AscendQuant
+    acl_tensor_ptr acl_input_tensor        = ggml_cann_create_tensor(input);
+    acl_tensor_ptr acl_input_scale_tensor  = ggml_cann_create_tensor(input_scale);
+    acl_tensor_ptr acl_input_offset_tensor = ggml_cann_create_tensor(input_offset);
+
+    size_t input_i8_elem_size = sizeof(int8_t);
+    int64_t input_i8_ne[GGML_MAX_DIMS];
+    size_t  input_i8_nb[GGML_MAX_DIMS];
+    memcpy(input_i8_ne, input->ne, GGML_MAX_DIMS * sizeof(int64_t));
+    input_i8_nb[0] = input_i8_elem_size;
+    for (int i = 1; i < GGML_MAX_DIMS; i++) {
+        input_i8_nb[i] = input_i8_nb[i - 1] * input_i8_ne[i - 1];
+    }
+
+    ggml_cann_pool_alloc input_i8_allocator(ctx.pool());
+    void * input_i8_buffer = input_i8_allocator.alloc(ggml_nelements(input) * input_i8_elem_size);
+    acl_tensor_ptr acl_input_i8_tensor = ggml_cann_create_tensor(input_i8_buffer, ACL_INT8, input_i8_elem_size,
+                                                                  input_i8_ne, input_i8_nb, GGML_MAX_DIMS);
+
+    bool        sqrt_mode  = false;
+    const char* round_mode = "round";
+    int32_t     dst_type   = 2;  // int8
+
+    GGML_CANN_CALL_ACLNN_OP(ctx, AscendQuant, acl_input_tensor.get(), acl_input_scale_tensor.get(),
+                            acl_input_offset_tensor.get(), sqrt_mode, round_mode, dst_type,
+                            acl_input_i8_tensor.get());
+
+    // Step 2: create weight tensor in FRACTAL_NZ format
+    // Weight data is already converted to NZ layout during buffer set
+    size_t weight_elem_size = sizeof(int8_t);
+    int64_t weight_ne[GGML_MAX_DIMS];
+    memcpy(weight_ne, weight->ne, GGML_MAX_DIMS * sizeof(int64_t));
+
+    // FRACTAL_NZ storage dims: {32, 16, ne[1]/16, ne[0]/32, ne[2], ne[3]}
+    GGML_ASSERT(weight->ne[0] % 32 == 0);
+    GGML_ASSERT(weight->ne[1] % 16 == 0);
+    int64_t weight_stor_ne[] = { 32, 16, weight->ne[1] / 16, weight->ne[0] / 32, weight->ne[2], weight->ne[3] };
+    size_t  weight_stor_nb[GGML_MAX_DIMS + 2];
+    weight_stor_nb[0] = weight_elem_size;
+    for (int i = 1; i < GGML_MAX_DIMS + 2; i++) {
+        weight_stor_nb[i] = weight_stor_nb[i - 1] * weight_stor_ne[i - 1];
+    }
+
+    size_t weight_nb[GGML_MAX_DIMS];
+    weight_nb[0] = weight_elem_size;
+    for (int i = 1; i < GGML_MAX_DIMS; i++) {
+        weight_nb[i] = weight_nb[i - 1] * weight_ne[i - 1];
+    }
+
+    acl_tensor_ptr acl_weight_tensor = ggml_cann_create_tensor_quant(weight->data, ACL_INT8,
+            weight_elem_size, weight_ne, weight_nb, GGML_MAX_DIMS,
+            weight_stor_ne, weight_stor_nb, GGML_MAX_DIMS + 2, ACL_FORMAT_FRACTAL_NZ);
+
+    // Step 3: create deq_scale (int64) and quant_bias (int32) tensors
+    size_t deq_scale_elem_size = sizeof(int64_t);
+    int64_t deq_scale_ne[] = { deq_scale->ne[0] };
+    size_t  deq_scale_nb[] = { deq_scale_elem_size };
+    acl_tensor_ptr acl_deq_scale_tensor = ggml_cann_create_tensor(deq_scale->data, ACL_INT64,
+            deq_scale_elem_size, deq_scale_ne, deq_scale_nb, 1);
+
+    size_t quant_bias_elem_size = sizeof(int32_t);
+    int64_t quant_bias_ne[] = { quant_bias->ne[0] };
+    size_t  quant_bias_nb[] = { quant_bias_elem_size };
+    acl_tensor_ptr acl_quant_bias_tensor = ggml_cann_create_tensor(quant_bias->data, ACL_INT32,
+            quant_bias_elem_size, quant_bias_ne, quant_bias_nb, 1);
+
+    // Step 4: output tensor (fp16 intermediate)
+    size_t output_elem_size = sizeof(uint16_t);
+    int64_t output_ne[GGML_MAX_DIMS];
+    size_t  output_nb[GGML_MAX_DIMS];
+    memcpy(output_ne, dst->ne, GGML_MAX_DIMS * sizeof(int64_t));
+    output_nb[0] = output_elem_size;
+    for (int i = 1; i < GGML_MAX_DIMS; i++) {
+        output_nb[i] = output_nb[i - 1] * output_ne[i - 1];
+    }
+
+    ggml_cann_pool_alloc output_allocator(ctx.pool());
+    void * output_buffer = output_allocator.alloc(ggml_nelements(dst) * output_elem_size);
+    acl_tensor_ptr acl_output_tensor = ggml_cann_create_tensor(output_buffer, ACL_FLOAT16, output_elem_size,
+            output_ne, output_nb, GGML_MAX_DIMS);
+
+    // QuantMatmulV4: input_i8 x weight_i8 with deq_scale and quant_bias
+    // transpose_weight=false, has_input_offset=true
+    GGML_CANN_CALL_ACLNN_OP(ctx, QuantMatmulV4, acl_input_i8_tensor.get(), acl_weight_tensor.get(),
+                            acl_deq_scale_tensor.get(), nullptr, nullptr, acl_quant_bias_tensor.get(),
+                            false, true, acl_output_tensor.get());
+
+    // Step 5: cast fp16 output to dst type
+    if (dst->type != GGML_TYPE_F16) {
+        acl_tensor_ptr acl_dst_tensor = ggml_cann_create_tensor(dst);
+        aclnn_cast(ctx, acl_output_tensor.get(), acl_dst_tensor.get(), ggml_cann_type_mapping(dst->type));
+    }
+}
+
 void ggml_cann_mul_mat(ggml_backend_cann_context & ctx, ggml_tensor * dst) {
     const enum ggml_type type = dst->src[0]->type;
     switch (type) {
@@ -2413,6 +2521,9 @@ void ggml_cann_mul_mat(ggml_backend_cann_context & ctx, ggml_tensor * dst) {
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q8_0:
             ggml_cann_mul_mat_quant(ctx, dst, type);
+            break;
+        case GGML_TYPE_I8:
+            ggml_cann_w8a8_mul_mat_quant(ctx, dst);
             break;
         default:
             GGML_ABORT("Unsupported type for mul_mat");

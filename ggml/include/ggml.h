@@ -1437,6 +1437,20 @@ extern "C" {
             struct ggml_tensor  * a,
             struct ggml_tensor  * b);
 
+    // W8A8 quantized matmul for msmodelslim format
+    // a: int8 weight, b: fp32 input
+    // deq_scale, input_offset, input_scale, quant_bias, weight_offset, weight_scale: quantization params
+    GGML_API struct ggml_tensor * ggml_mul_mat_quant(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * deq_scale,
+            struct ggml_tensor  * input_offset,
+            struct ggml_tensor  * input_scale,
+            struct ggml_tensor  * quant_bias,
+            struct ggml_tensor  * weight_offset,
+            struct ggml_tensor  * weight_scale,
+            struct ggml_tensor  * b);
+
     // change the precision of a matrix multiplication
     // set to GGML_PREC_F32 for higher precision (useful for phi-2)
     GGML_API void ggml_mul_mat_set_prec(

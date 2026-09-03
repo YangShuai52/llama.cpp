@@ -1054,6 +1054,17 @@ struct llm_graph_context {
               ggml_tensor * cur,
               ggml_tensor * w_s = nullptr) const;
 
+    // do W8A8 quantized mat_mul (msmodelslim format), while optionally apply lora
+    ggml_tensor * build_lora_mm_quant(
+              ggml_tensor * w,
+              ggml_tensor * deq_scale,
+              ggml_tensor * input_offset,
+              ggml_tensor * input_scale,
+              ggml_tensor * quant_bias,
+              ggml_tensor * weight_offset,
+              ggml_tensor * weight_scale,
+              ggml_tensor * cur) const;
+
     // do mat_mul_id, while optionally apply lora and per-expert scale
     ggml_tensor * build_lora_mm_id(
               ggml_tensor * w,   // ggml_tensor * as

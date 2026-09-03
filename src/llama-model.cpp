@@ -1652,6 +1652,65 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             if (!layer.nextn.shared_head_head_in_s && layer.nextn.shared_head_head) {
                 layer.nextn.shared_head_head_in_s = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "input_scale", i), {1}, TENSOR_NOT_REQUIRED);
             }
+
+            // msmodelslim W8A8 quantization params
+            // tensor names: blk.N.attn_q.weight.deq_scale, etc.
+            if (layer.wq && !layer.wq_w8a8.deq_scale) {
+                layer.wq_w8a8.deq_scale     = create_tensor(tn(LLM_TENSOR_ATTN_Q,   "weight.deq_scale",     i), {layer.wq->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.wq_w8a8.input_offset  = create_tensor(tn(LLM_TENSOR_ATTN_Q,   "weight.input_offset",  i), {1}, TENSOR_NOT_REQUIRED);
+                layer.wq_w8a8.input_scale   = create_tensor(tn(LLM_TENSOR_ATTN_Q,   "weight.input_scale",   i), {1}, TENSOR_NOT_REQUIRED);
+                layer.wq_w8a8.quant_bias    = create_tensor(tn(LLM_TENSOR_ATTN_Q,   "weight.quant_bias",    i), {layer.wq->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.wq_w8a8.weight_offset = create_tensor(tn(LLM_TENSOR_ATTN_Q,   "weight.weight_offset", i), {1, layer.wq->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.wq_w8a8.weight_scale  = create_tensor(tn(LLM_TENSOR_ATTN_Q,   "weight.weight_scale",  i), {1, layer.wq->ne[1]}, TENSOR_NOT_REQUIRED);
+            }
+            if (layer.wk && !layer.wk_w8a8.deq_scale) {
+                layer.wk_w8a8.deq_scale     = create_tensor(tn(LLM_TENSOR_ATTN_K,   "weight.deq_scale",     i), {layer.wk->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.wk_w8a8.input_offset  = create_tensor(tn(LLM_TENSOR_ATTN_K,   "weight.input_offset",  i), {1}, TENSOR_NOT_REQUIRED);
+                layer.wk_w8a8.input_scale   = create_tensor(tn(LLM_TENSOR_ATTN_K,   "weight.input_scale",   i), {1}, TENSOR_NOT_REQUIRED);
+                layer.wk_w8a8.quant_bias    = create_tensor(tn(LLM_TENSOR_ATTN_K,   "weight.quant_bias",    i), {layer.wk->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.wk_w8a8.weight_offset = create_tensor(tn(LLM_TENSOR_ATTN_K,   "weight.weight_offset", i), {1, layer.wk->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.wk_w8a8.weight_scale  = create_tensor(tn(LLM_TENSOR_ATTN_K,   "weight.weight_scale",  i), {1, layer.wk->ne[1]}, TENSOR_NOT_REQUIRED);
+            }
+            if (layer.wv && !layer.wv_w8a8.deq_scale) {
+                layer.wv_w8a8.deq_scale     = create_tensor(tn(LLM_TENSOR_ATTN_V,   "weight.deq_scale",     i), {layer.wv->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.wv_w8a8.input_offset  = create_tensor(tn(LLM_TENSOR_ATTN_V,   "weight.input_offset",  i), {1}, TENSOR_NOT_REQUIRED);
+                layer.wv_w8a8.input_scale   = create_tensor(tn(LLM_TENSOR_ATTN_V,   "weight.input_scale",   i), {1}, TENSOR_NOT_REQUIRED);
+                layer.wv_w8a8.quant_bias    = create_tensor(tn(LLM_TENSOR_ATTN_V,   "weight.quant_bias",    i), {layer.wv->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.wv_w8a8.weight_offset = create_tensor(tn(LLM_TENSOR_ATTN_V,   "weight.weight_offset", i), {1, layer.wv->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.wv_w8a8.weight_scale  = create_tensor(tn(LLM_TENSOR_ATTN_V,   "weight.weight_scale",  i), {1, layer.wv->ne[1]}, TENSOR_NOT_REQUIRED);
+            }
+            if (layer.wo && !layer.wo_w8a8.deq_scale) {
+                layer.wo_w8a8.deq_scale     = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight.deq_scale",     i), {layer.wo->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.wo_w8a8.input_offset  = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight.input_offset",  i), {1}, TENSOR_NOT_REQUIRED);
+                layer.wo_w8a8.input_scale   = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight.input_scale",   i), {1}, TENSOR_NOT_REQUIRED);
+                layer.wo_w8a8.quant_bias    = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight.quant_bias",    i), {layer.wo->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.wo_w8a8.weight_offset = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight.weight_offset", i), {1, layer.wo->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.wo_w8a8.weight_scale  = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight.weight_scale",  i), {1, layer.wo->ne[1]}, TENSOR_NOT_REQUIRED);
+            }
+            if (layer.ffn_gate && !layer.ffn_gate_w8a8.deq_scale) {
+                layer.ffn_gate_w8a8.deq_scale     = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight.deq_scale",     i), {layer.ffn_gate->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.ffn_gate_w8a8.input_offset  = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight.input_offset",  i), {1}, TENSOR_NOT_REQUIRED);
+                layer.ffn_gate_w8a8.input_scale   = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight.input_scale",   i), {1}, TENSOR_NOT_REQUIRED);
+                layer.ffn_gate_w8a8.quant_bias    = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight.quant_bias",    i), {layer.ffn_gate->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.ffn_gate_w8a8.weight_offset = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight.weight_offset", i), {1, layer.ffn_gate->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.ffn_gate_w8a8.weight_scale  = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight.weight_scale",  i), {1, layer.ffn_gate->ne[1]}, TENSOR_NOT_REQUIRED);
+            }
+            if (layer.ffn_up && !layer.ffn_up_w8a8.deq_scale) {
+                layer.ffn_up_w8a8.deq_scale     = create_tensor(tn(LLM_TENSOR_FFN_UP, "weight.deq_scale",     i), {layer.ffn_up->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.ffn_up_w8a8.input_offset  = create_tensor(tn(LLM_TENSOR_FFN_UP, "weight.input_offset",  i), {1}, TENSOR_NOT_REQUIRED);
+                layer.ffn_up_w8a8.input_scale   = create_tensor(tn(LLM_TENSOR_FFN_UP, "weight.input_scale",   i), {1}, TENSOR_NOT_REQUIRED);
+                layer.ffn_up_w8a8.quant_bias    = create_tensor(tn(LLM_TENSOR_FFN_UP, "weight.quant_bias",    i), {layer.ffn_up->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.ffn_up_w8a8.weight_offset = create_tensor(tn(LLM_TENSOR_FFN_UP, "weight.weight_offset", i), {1, layer.ffn_up->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.ffn_up_w8a8.weight_scale  = create_tensor(tn(LLM_TENSOR_FFN_UP, "weight.weight_scale",  i), {1, layer.ffn_up->ne[1]}, TENSOR_NOT_REQUIRED);
+            }
+            if (layer.ffn_down && !layer.ffn_down_w8a8.deq_scale) {
+                layer.ffn_down_w8a8.deq_scale     = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight.deq_scale",     i), {layer.ffn_down->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.ffn_down_w8a8.input_offset  = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight.input_offset",  i), {1}, TENSOR_NOT_REQUIRED);
+                layer.ffn_down_w8a8.input_scale   = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight.input_scale",   i), {1}, TENSOR_NOT_REQUIRED);
+                layer.ffn_down_w8a8.quant_bias    = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight.quant_bias",    i), {layer.ffn_down->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.ffn_down_w8a8.weight_offset = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight.weight_offset", i), {1, layer.ffn_down->ne[1]}, TENSOR_NOT_REQUIRED);
+                layer.ffn_down_w8a8.weight_scale  = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight.weight_scale",  i), {1, layer.ffn_down->ne[1]}, TENSOR_NOT_REQUIRED);
+            }
         }
         // output scales
         if (output && output->type == GGML_TYPE_NVFP4) {

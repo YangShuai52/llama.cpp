@@ -247,6 +247,16 @@ struct llama_layer_switch_lora {
     struct ggml_tensor * b_down = nullptr;
 };
 
+// msmodelslim W8A8 quantization parameters for a single weight matrix
+struct llama_layer_w8a8 {
+    struct ggml_tensor * deq_scale      = nullptr;
+    struct ggml_tensor * input_offset   = nullptr;
+    struct ggml_tensor * input_scale    = nullptr;
+    struct ggml_tensor * quant_bias     = nullptr;
+    struct ggml_tensor * weight_offset  = nullptr;
+    struct ggml_tensor * weight_scale   = nullptr;
+};
+
 struct llama_layer {
     // normalization
     struct ggml_tensor * attn_norm       = nullptr;
@@ -482,6 +492,15 @@ struct llama_layer {
     struct ggml_tensor * ssm_out_in_s       = nullptr;
     struct ggml_tensor * ssm_alpha_in_s     = nullptr;
     struct ggml_tensor * ssm_beta_in_s      = nullptr;
+
+    // msmodelslim W8A8 quantization params
+    struct llama_layer_w8a8 wq_w8a8;
+    struct llama_layer_w8a8 wk_w8a8;
+    struct llama_layer_w8a8 wv_w8a8;
+    struct llama_layer_w8a8 wo_w8a8;
+    struct llama_layer_w8a8 ffn_gate_w8a8;
+    struct llama_layer_w8a8 ffn_up_w8a8;
+    struct llama_layer_w8a8 ffn_down_w8a8;
 
     // altup & laurel
     struct ggml_tensor * per_layer_inp_gate   = nullptr;

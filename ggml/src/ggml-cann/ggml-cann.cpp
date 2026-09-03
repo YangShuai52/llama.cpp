@@ -2446,6 +2446,10 @@ static bool ggml_backend_cann_supports_op(ggml_backend_dev_t dev, const ggml_ten
                     case GGML_TYPE_F16:
                     case GGML_TYPE_F32:
                         return true;
+                    case GGML_TYPE_I8:
+                        // W8A8: check that quantization params are present in src[2]-src[5]
+                        return op->src[2] != nullptr && op->src[3] != nullptr &&
+                               op->src[4] != nullptr && op->src[5] != nullptr;
                     case GGML_TYPE_Q8_0:
                     case GGML_TYPE_Q4_0:
 #ifdef ASCEND_310P

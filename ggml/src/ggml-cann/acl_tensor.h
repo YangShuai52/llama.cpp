@@ -135,6 +135,42 @@ acl_tensor_ptr ggml_cann_create_tensor(void *      data_ptr,
     return acl_tensor_ptr(raw);
 }
 
+// Create an ACL tensor with separate storage dims (needed for FRACTAL_NZ format)
+template <typename TYPE>
+acl_tensor_ptr ggml_cann_create_tensor_quant(void *      data_ptr,
+                                    aclDataType dtype,
+                                    TYPE        type_size,
+                                    int64_t *   ne,
+                                    TYPE *      nb,
+                                    int64_t     dims,
+                                    int64_t *   storagene,
+                                    TYPE *      storagenb,
+                                    int64_t     storagedims,
+                                    aclFormat   format = ACL_FORMAT_ND,
+                                    size_t      offset = 0) {
+    int64_t tmp_ne[GGML_MAX_DIMS * 2];
+    int64_t tmp_stride[GGML_MAX_DIMS * 2];
+
+    memcpy(tmp_ne, ne, dims * sizeof(int64_t));
+    for (int i = 0; i < dims; i++) {
+        tmp_stride[i] = nb[i] / type_size;
+    }
+
+    int64_t acl_storage_len = 1;
+    for (int i = 0; i < dims; i++) {
+        acl_storage_len += (tmp_ne[i] - 1) * tmp_stride[i];
+    }
+
+    std::reverse(tmp_ne, tmp_ne + dims);
+    std::reverse(tmp_stride, tmp_stride + dims);
+    std::reverse(storagene, storagene + storagedims);
+
+    aclTensor * raw =
+        aclCreateTensor(tmp_ne, dims, dtype, tmp_stride, offset / type_size, format, storagene, storagedims, data_ptr);
+
+    return acl_tensor_ptr(raw);
+}
+
 /**
  * @brief Create an ACL int array resource wrapped in a smart pointer.
  *

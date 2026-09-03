@@ -263,7 +263,16 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn(
     // Order: joint QG projection, QG split, Q norm, KV projection, K norm, RoPE, attention
 
     // Qwen3Next uses a single Q projection that outputs query + gate
-    ggml_tensor * Qcur_full = build_lora_mm(model.layers[il].wq, cur, model.layers[il].wq_s); // [ (n_embd_head * 2) * n_head, n_tokens ]
+    auto & layer = model.layers[il];
+    ggml_tensor * Qcur_full;
+    if (layer.wq_w8a8.deq_scale) {
+        Qcur_full = build_lora_mm_quant(layer.wq, layer.wq_w8a8.deq_scale,
+                layer.wq_w8a8.input_offset, layer.wq_w8a8.input_scale,
+                layer.wq_w8a8.quant_bias, layer.wq_w8a8.weight_offset,
+                layer.wq_w8a8.weight_scale, cur);
+    } else {
+        Qcur_full = build_lora_mm(layer.wq, cur, layer.wq_s);
+    }
     cb(Qcur_full, "Qcur_full", il);
 
     ggml_tensor * Qcur = ggml_view_3d(ctx0, Qcur_full, n_embd_head, n_head, n_tokens,
@@ -275,10 +284,26 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn(
     Qcur = build_norm(Qcur, model.layers[il].attn_q_norm, nullptr, LLM_NORM_RMS, il);
     cb(Qcur, "Qcur_normed", il);
 
-    ggml_tensor * Kcur = build_lora_mm(model.layers[il].wk, cur, model.layers[il].wk_s);
+    ggml_tensor * Kcur;
+    if (layer.wk_w8a8.deq_scale) {
+        Kcur = build_lora_mm_quant(layer.wk, layer.wk_w8a8.deq_scale,
+                layer.wk_w8a8.input_offset, layer.wk_w8a8.input_scale,
+                layer.wk_w8a8.quant_bias, layer.wk_w8a8.weight_offset,
+                layer.wk_w8a8.weight_scale, cur);
+    } else {
+        Kcur = build_lora_mm(layer.wk, cur, layer.wk_s);
+    }
     cb(Kcur, "Kcur", il);
 
-    ggml_tensor * Vcur = build_lora_mm(model.layers[il].wv, cur, model.layers[il].wv_s);
+    ggml_tensor * Vcur;
+    if (layer.wv_w8a8.deq_scale) {
+        Vcur = build_lora_mm_quant(layer.wv, layer.wv_w8a8.deq_scale,
+                layer.wv_w8a8.input_offset, layer.wv_w8a8.input_scale,
+                layer.wv_w8a8.quant_bias, layer.wv_w8a8.weight_offset,
+                layer.wv_w8a8.weight_scale, cur);
+    } else {
+        Vcur = build_lora_mm(layer.wv, cur, layer.wv_s);
+    }
     cb(Vcur, "Vcur", il);
 
     // Apply K normalization
@@ -326,7 +351,14 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn(
     cur = ggml_mul(ctx0, cur, gate_sigmoid);
     cb(cur, "attn_gated", il);
 
-    cur = build_lora_mm(model.layers[il].wo, cur, model.layers[il].wo_s);
+    if (layer.wo_w8a8.deq_scale) {
+        cur = build_lora_mm_quant(layer.wo, layer.wo_w8a8.deq_scale,
+                layer.wo_w8a8.input_offset, layer.wo_w8a8.input_scale,
+                layer.wo_w8a8.quant_bias, layer.wo_w8a8.weight_offset,
+                layer.wo_w8a8.weight_scale, cur);
+    } else {
+        cur = build_lora_mm(layer.wo, cur, layer.wo_s);
+    }
     cb(cur, "attn_output", il);
 
     return cur;
@@ -470,12 +502,46 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_ffn(ggml_tensor * cur, cons
     // Qwen3.5 does not use MoE FFN
     GGML_ASSERT(model.layers[il].ffn_gate_inp == nullptr);
 
-    cur = build_ffn(cur,
-        model.layers[il].ffn_up, NULL, model.layers[il].ffn_up_s,
-        model.layers[il].ffn_gate, NULL, model.layers[il].ffn_gate_s,
-        model.layers[il].ffn_down, NULL, model.layers[il].ffn_down_s,
-        NULL,
-        LLM_FFN_SILU, LLM_FFN_PAR, il);
+    auto & layer = model.layers[il];
+    const bool w8a8 = layer.ffn_up_w8a8.deq_scale != nullptr;
+
+    // up projection
+    ggml_tensor * tmp;
+    if (w8a8) {
+        tmp = build_lora_mm_quant(layer.ffn_up, layer.ffn_up_w8a8.deq_scale,
+                layer.ffn_up_w8a8.input_offset, layer.ffn_up_w8a8.input_scale,
+                layer.ffn_up_w8a8.quant_bias, layer.ffn_up_w8a8.weight_offset,
+                layer.ffn_up_w8a8.weight_scale, cur);
+    } else {
+        tmp = build_lora_mm(layer.ffn_up, cur, layer.ffn_up_s);
+    }
+    cb(tmp, "ffn_up", il);
+
+    // gate projection (PAR: gate uses original cur, not tmp)
+    ggml_tensor * gate;
+    if (w8a8) {
+        gate = build_lora_mm_quant(layer.ffn_gate, layer.ffn_gate_w8a8.deq_scale,
+                layer.ffn_gate_w8a8.input_offset, layer.ffn_gate_w8a8.input_scale,
+                layer.ffn_gate_w8a8.quant_bias, layer.ffn_gate_w8a8.weight_offset,
+                layer.ffn_gate_w8a8.weight_scale, cur);
+    } else {
+        gate = build_lora_mm(layer.ffn_gate, cur, layer.ffn_gate_s);
+    }
+    cb(gate, "ffn_gate", il);
+
+    // SiLU gate * up
+    cur = ggml_swiglu_split(ctx0, gate, tmp);
+    cb(cur, "ffn_swiglu", il);
+
+    // down projection
+    if (w8a8) {
+        cur = build_lora_mm_quant(layer.ffn_down, layer.ffn_down_w8a8.deq_scale,
+                layer.ffn_down_w8a8.input_offset, layer.ffn_down_w8a8.input_scale,
+                layer.ffn_down_w8a8.quant_bias, layer.ffn_down_w8a8.weight_offset,
+                layer.ffn_down_w8a8.weight_scale, cur);
+    } else {
+        cur = build_lora_mm(layer.ffn_down, cur, layer.ffn_down_s);
+    }
     cb(cur, "ffn_out", il);
 
     return cur;
@@ -553,7 +619,15 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     cur = build_norm(cur, layer.attn_norm, nullptr, LLM_NORM_RMS, il);
     cb(cur, "mtp_attn_norm", il);
 
-    ggml_tensor * Qcur_full = build_lora_mm(layer.wq, cur, layer.wq_s);
+    ggml_tensor * Qcur_full;
+    if (layer.wq_w8a8.deq_scale) {
+        Qcur_full = build_lora_mm_quant(layer.wq, layer.wq_w8a8.deq_scale,
+                layer.wq_w8a8.input_offset, layer.wq_w8a8.input_scale,
+                layer.wq_w8a8.quant_bias, layer.wq_w8a8.weight_offset,
+                layer.wq_w8a8.weight_scale, cur);
+    } else {
+        Qcur_full = build_lora_mm(layer.wq, cur, layer.wq_s);
+    }
     cb(Qcur_full, "mtp_Qcur_full", il);
 
     ggml_tensor * Qcur = ggml_view_3d(ctx0, Qcur_full,
@@ -572,12 +646,28 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     gate = ggml_cont_2d(ctx0, gate, n_embd_head * n_head, n_tokens);
     cb(gate, "mtp_gate", il);
 
-    ggml_tensor * Kcur = build_lora_mm(layer.wk, cur, layer.wk_s);
+    ggml_tensor * Kcur;
+    if (layer.wk_w8a8.deq_scale) {
+        Kcur = build_lora_mm_quant(layer.wk, layer.wk_w8a8.deq_scale,
+                layer.wk_w8a8.input_offset, layer.wk_w8a8.input_scale,
+                layer.wk_w8a8.quant_bias, layer.wk_w8a8.weight_offset,
+                layer.wk_w8a8.weight_scale, cur);
+    } else {
+        Kcur = build_lora_mm(layer.wk, cur, layer.wk_s);
+    }
     Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
     Kcur = build_norm(Kcur, layer.attn_k_norm, nullptr, LLM_NORM_RMS, il);
     cb(Kcur, "mtp_Kcur_normed", il);
 
-    ggml_tensor * Vcur = build_lora_mm(layer.wv, cur, layer.wv_s);
+    ggml_tensor * Vcur;
+    if (layer.wv_w8a8.deq_scale) {
+        Vcur = build_lora_mm_quant(layer.wv, layer.wv_w8a8.deq_scale,
+                layer.wv_w8a8.input_offset, layer.wv_w8a8.input_scale,
+                layer.wv_w8a8.quant_bias, layer.wv_w8a8.weight_offset,
+                layer.wv_w8a8.weight_scale, cur);
+    } else {
+        Vcur = build_lora_mm(layer.wv, cur, layer.wv_s);
+    }
     Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
     cb(Vcur, "mtp_Vcur", il);
 
@@ -597,7 +687,14 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     cb(cur, "mtp_attn_pregate", il);
 
     cur = ggml_mul(ctx0, cur, ggml_sigmoid(ctx0, gate));
-    cur = build_lora_mm(layer.wo, cur, layer.wo_s);
+    if (layer.wo_w8a8.deq_scale) {
+        cur = build_lora_mm_quant(layer.wo, layer.wo_w8a8.deq_scale,
+                layer.wo_w8a8.input_offset, layer.wo_w8a8.input_scale,
+                layer.wo_w8a8.quant_bias, layer.wo_w8a8.weight_offset,
+                layer.wo_w8a8.weight_scale, cur);
+    } else {
+        cur = build_lora_mm(layer.wo, cur, layer.wo_s);
+    }
     cb(cur, "mtp_attn_out", il);
 
     cur = ggml_add(ctx0, cur, inpSA);
@@ -607,12 +704,40 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     cur = build_norm(cur, layer.attn_post_norm, nullptr, LLM_NORM_RMS, il);
     cb(cur, "mtp_attn_post_norm", il);
 
-    cur = build_ffn(cur,
-            layer.ffn_up,   nullptr, layer.ffn_up_s,
-            layer.ffn_gate, nullptr, layer.ffn_gate_s,
-            layer.ffn_down, nullptr, layer.ffn_down_s,
-            nullptr,
-            LLM_FFN_SILU, LLM_FFN_PAR, il);
+    const bool mtp_w8a8 = layer.ffn_up_w8a8.deq_scale != nullptr;
+    ggml_tensor * ffn_tmp;
+    if (mtp_w8a8) {
+        ffn_tmp = build_lora_mm_quant(layer.ffn_up, layer.ffn_up_w8a8.deq_scale,
+                layer.ffn_up_w8a8.input_offset, layer.ffn_up_w8a8.input_scale,
+                layer.ffn_up_w8a8.quant_bias, layer.ffn_up_w8a8.weight_offset,
+                layer.ffn_up_w8a8.weight_scale, cur);
+    } else {
+        ffn_tmp = build_lora_mm(layer.ffn_up, cur, layer.ffn_up_s);
+    }
+    cb(ffn_tmp, "mtp_ffn_up", il);
+
+    ggml_tensor * ffn_gate;
+    if (mtp_w8a8) {
+        ffn_gate = build_lora_mm_quant(layer.ffn_gate, layer.ffn_gate_w8a8.deq_scale,
+                layer.ffn_gate_w8a8.input_offset, layer.ffn_gate_w8a8.input_scale,
+                layer.ffn_gate_w8a8.quant_bias, layer.ffn_gate_w8a8.weight_offset,
+                layer.ffn_gate_w8a8.weight_scale, cur);
+    } else {
+        ffn_gate = build_lora_mm(layer.ffn_gate, cur, layer.ffn_gate_s);
+    }
+    cb(ffn_gate, "mtp_ffn_gate", il);
+
+    cur = ggml_swiglu_split(ctx0, ffn_gate, ffn_tmp);
+    cb(cur, "mtp_ffn_swiglu", il);
+
+    if (mtp_w8a8) {
+        cur = build_lora_mm_quant(layer.ffn_down, layer.ffn_down_w8a8.deq_scale,
+                layer.ffn_down_w8a8.input_offset, layer.ffn_down_w8a8.input_scale,
+                layer.ffn_down_w8a8.quant_bias, layer.ffn_down_w8a8.weight_offset,
+                layer.ffn_down_w8a8.weight_scale, cur);
+    } else {
+        cur = build_lora_mm(layer.ffn_down, cur, layer.ffn_down_s);
+    }
     cb(cur, "mtp_ffn_out", il);
 
     cur = ggml_add(ctx0, cur, ffn_residual);
