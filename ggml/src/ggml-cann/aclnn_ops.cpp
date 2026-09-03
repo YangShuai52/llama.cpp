@@ -4530,11 +4530,13 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
     cast_f32_to_f16(beta, beta_f16);
 
     // --- Cast state F32 -> F16 ---
-    // state: [S_v, S_v, H, n_seqs] -> ACLNN [n_seqs, H, S_v, S_v] (num_slots=n_seqs)
+    // llama.cpp stores state transposed: s_out[j*S_v + i] = S[i][j], i.e. layout [K, V, H, n_seqs]
+    // ACLNN expects state layout [V, K, H, n_seqs], so we need to transpose V and K dims
     size_t state_elems = ggml_nelements(state);
     ggml_cann_pool_alloc state_f16_alloc(ctx.pool());
     void * state_f16 = state_f16_alloc.alloc(state_elems * sizeof(uint16_t));
     {
+        // First cast F32 -> F16 preserving original layout [S_v, S_v, H, n_seqs]
         acl_tensor_ptr acl_src = ggml_cann_create_tensor(state);
         size_t elem_size = sizeof(uint16_t);
         size_t nb[GGML_MAX_DIMS];
@@ -4542,8 +4544,20 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
         for (int i = 1; i < GGML_MAX_DIMS; i++) {
             nb[i] = nb[i - 1] * state->ne[i - 1];
         }
+        // Intermediate buffer in original (transposed) layout
+        ggml_cann_pool_alloc state_tmp_alloc(ctx.pool());
+        void * state_tmp = state_tmp_alloc.alloc(state_elems * sizeof(uint16_t));
+        acl_tensor_ptr acl_tmp = ggml_cann_create_tensor(state_tmp, ACL_FLOAT16, elem_size, state->ne, nb, GGML_MAX_DIMS);
+        aclnn_cast(ctx, acl_src.get(), acl_tmp.get(), ACL_FLOAT16);
+
+        // Transpose dims 0 and 1: [S_v, S_v, H, n_seqs] -> [S_v, S_v, H, n_seqs] (swapped)
+        // Source: ne=[S_v, S_v, H, n_seqs], nb=[2, 2*S_v, 2*S_v*S_v, ...]
+        // Dst:   ne=[S_v, S_v, H, n_seqs], nb=[2, 2*S_v, 2*S_v*S_v, ...] but with src/dst dims swapped
+        // We use aclnnTranspose to swap dim 0 and dim 1
         acl_tensor_ptr acl_dst = ggml_cann_create_tensor(state_f16, ACL_FLOAT16, elem_size, state->ne, nb, GGML_MAX_DIMS);
-        aclnn_cast(ctx, acl_src.get(), acl_dst.get(), ACL_FLOAT16);
+        int64_t perm[] = {1, 0, 2, 3};  // swap dim 0 and 1
+        acl_int_array_ptr perm_arr = ggml_cann_create_int_array(perm, 4);
+        GGML_CANN_CALL_ACLNN_OP(ctx, Transpose, acl_tmp.get(), perm_arr.get(), acl_dst.get());
     }
 
     // --- Create ACL tensors with correct shapes for v310 API ---
@@ -4574,25 +4588,8 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
         return ggml_cann_create_tensor(data, dtype, elem_size, ne, nb, 2);
     };
     acl_tensor_ptr acl_beta = make_gd_acl_tensor(beta_f16, ACL_FLOAT16, sizeof(uint16_t), n_seqs, H);
-    // ACLNN kernel applies state *= g directly, but llama.cpp CPU uses state *= exp(g).
-    // Compute exp(g) into a temporary buffer to match CPU behavior.
-    size_t g_elems = ggml_nelements(g);
-    ggml_cann_pool_alloc g_exp_alloc(ctx.pool());
-    void * g_exp = g_exp_alloc.alloc(g_elems * sizeof(float));
-    {
-        acl_tensor_ptr acl_g_src = ggml_cann_create_tensor(g);
-        size_t elem_size = sizeof(float);
-        int64_t ne[GGML_MAX_DIMS];
-        size_t  nb[GGML_MAX_DIMS];
-        memcpy(ne, g->ne, sizeof(ne));
-        nb[0] = elem_size;
-        for (int i = 1; i < GGML_MAX_DIMS; i++) {
-            nb[i] = nb[i - 1] * ne[i - 1];
-        }
-        acl_tensor_ptr acl_g_dst = ggml_cann_create_tensor(g_exp, ACL_FLOAT, elem_size, ne, nb, GGML_MAX_DIMS);
-        GGML_CANN_CALL_ACLNN_OP(ctx, Exp, acl_g_src.get(), acl_g_dst.get());
-    }
-    acl_tensor_ptr acl_g    = make_gd_acl_tensor(g_exp, ACL_FLOAT, sizeof(float), n_seqs, H);
+    // g: ACLNN kernel applies state *= g directly (g is already the gate value)
+    acl_tensor_ptr acl_g    = make_gd_acl_tensor(g->data, ACL_FLOAT, sizeof(float), n_seqs, H);
 
     // state: [num_slots, H, S_v, S_v] = [n_seqs, H, S_v, S_v] (4D)
     {
@@ -4665,8 +4662,9 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
             aclnn_cast(ctx, acl_out_f16.get(), acl_out_f32.get(), ACL_FLOAT);
         }
 
-        // --- Cast updated state F16 -> F32 ---
-        // State is written to the state portion of dst (after output rows)
+        // --- Cast updated state F16 -> F32 with transpose back ---
+        // ACLNN outputs state in [V, K, H, n_seqs] layout
+        // llama.cpp expects transposed [K, V, H, n_seqs] layout
         size_t state_offset = S_v * H * num_tokens * sizeof(float);
         {
             int64_t s_ne[] = { S_v, S_v, H, n_seqs };
@@ -4675,8 +4673,16 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
             s_nb[1] = s_nb[0] * s_ne[0];
             s_nb[2] = s_nb[1] * s_ne[1];
             s_nb[3] = s_nb[2] * s_ne[2];
-            acl_tensor_ptr acl_state_f16 = ggml_cann_create_tensor(state_f16, ACL_FLOAT16, sizeof(uint16_t), s_ne, s_nb, 4);
+            // Transpose ACLNN output [V,K,...] -> llama.cpp [K,V,...]
+            ggml_cann_pool_alloc state_t_alloc(ctx.pool());
+            void * state_t = state_t_alloc.alloc(state_elems * sizeof(uint16_t));
+            acl_tensor_ptr acl_state_src = ggml_cann_create_tensor(state_f16, ACL_FLOAT16, sizeof(uint16_t), s_ne, s_nb, 4);
+            acl_tensor_ptr acl_state_t  = ggml_cann_create_tensor(state_t, ACL_FLOAT16, sizeof(uint16_t), s_ne, s_nb, 4);
+            int64_t perm[] = {1, 0, 2, 3};
+            acl_int_array_ptr perm_arr = ggml_cann_create_int_array(perm, 4);
+            GGML_CANN_CALL_ACLNN_OP(ctx, Transpose, acl_state_src.get(), perm_arr.get(), acl_state_t.get());
 
+            // Cast transposed F16 -> F32 into dst
             size_t dst_s_nb[4];
             dst_s_nb[0] = sizeof(float);
             dst_s_nb[1] = dst_s_nb[0] * S_v;
@@ -4684,6 +4690,7 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
             dst_s_nb[3] = dst_s_nb[2] * H;
             acl_tensor_ptr acl_state_f32 = ggml_cann_create_tensor((char *)dst->data + state_offset,
                 ACL_FLOAT, sizeof(float), s_ne, dst_s_nb, 4);
+            acl_tensor_ptr acl_state_f16 = ggml_cann_create_tensor(state_t, ACL_FLOAT16, sizeof(uint16_t), s_ne, s_nb, 4);
             aclnn_cast(ctx, acl_state_f16.get(), acl_state_f32.get(), ACL_FLOAT);
         }
     }
