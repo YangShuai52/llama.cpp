@@ -4574,27 +4574,23 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
     };
     acl_tensor_ptr acl_beta = make_gd_acl_tensor(beta_f16, ACL_FLOAT16, sizeof(uint16_t), n_seqs, H);
     // CPU uses state *= exp(g), ACLNN uses state *= g directly.
-    // Compute exp(g) on host and upload to device.
+    // Use aclnnExp on device to compute exp(g) without host copy.
     size_t g_elems = ggml_nelements(g);
-    std::vector<float> g_host(g_elems);
-    // Try D2H first; if it fails, the tensor might be in host memory
-    aclError err = aclrtMemcpy(g_host.data(), g_elems * sizeof(float), g->data,
-                               g_elems * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST);
-    if (err != ACL_SUCCESS) {
-        // Fallback: try H2H copy (tensor might be in pinned host memory)
-        err = aclrtMemcpy(g_host.data(), g_elems * sizeof(float), g->data,
-                          g_elems * sizeof(float), ACL_MEMCPY_HOST_TO_HOST);
-    }
-    if (err != ACL_SUCCESS) {
-        GGML_ABORT("Failed to copy g tensor for exp computation");
-    }
-    for (size_t i = 0; i < g_elems; i++) {
-        g_host[i] = expf(g_host[i]);
-    }
     ggml_cann_pool_alloc g_exp_alloc(ctx.pool());
     void * g_exp = g_exp_alloc.alloc(g_elems * sizeof(float));
-    ACL_CHECK(aclrtMemcpy(g_exp, g_elems * sizeof(float), g_host.data(),
-                          g_elems * sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE));
+    {
+        acl_tensor_ptr acl_g_src = ggml_cann_create_tensor(g);
+        size_t elem_size = sizeof(float);
+        int64_t ne[GGML_MAX_DIMS];
+        size_t  nb[GGML_MAX_DIMS];
+        memcpy(ne, g->ne, sizeof(ne));
+        nb[0] = elem_size;
+        for (int i = 1; i < GGML_MAX_DIMS; i++) {
+            nb[i] = nb[i - 1] * ne[i - 1];
+        }
+        acl_tensor_ptr acl_g_dst = ggml_cann_create_tensor(g_exp, ACL_FLOAT, elem_size, ne, nb, GGML_MAX_DIMS);
+        GGML_CANN_CALL_ACLNN_OP(ctx, Exp, acl_g_src.get(), acl_g_dst.get());
+    }
     acl_tensor_ptr acl_g    = make_gd_acl_tensor(g_exp, ACL_FLOAT, sizeof(float), n_seqs, H);
 
     // state: [num_slots, H, S_v, S_v] = [n_seqs, H, S_v, S_v] (4D)
