@@ -4577,8 +4577,10 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
     // Compute exp(g) on host and upload to device.
     size_t g_elems = ggml_nelements(g);
     std::vector<float> g_host(g_elems);
+    // g may be in device or host memory depending on where it was computed
+    aclrtMemcpyKind g_kind = ggml_backend_buffer_is_host(g->buffer) ? ACL_MEMCPY_HOST_TO_HOST : ACL_MEMCPY_DEVICE_TO_HOST;
     ACL_CHECK(aclrtMemcpy(g_host.data(), g_elems * sizeof(float), g->data,
-                          g_elems * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST));
+                          g_elems * sizeof(float), g_kind));
     for (size_t i = 0; i < g_elems; i++) {
         g_host[i] = expf(g_host[i]);
     }
