@@ -4574,20 +4574,8 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
         return ggml_cann_create_tensor(data, dtype, elem_size, ne, nb, 2);
     };
     acl_tensor_ptr acl_beta = make_gd_acl_tensor(beta_f16, ACL_FLOAT16, sizeof(uint16_t), n_seqs, H);
-    // CPU uses state *= exp(g), but ACLNN kernel uses state *= g directly.
-    // Compute exp(g) on host (g is small: H*n_seqs floats for decode) and upload to device.
-    size_t g_elems = ggml_nelements(g);
-    std::vector<float> g_host(g_elems);
-    ACL_CHECK(aclrtMemcpy(g_host.data(), g_elems * sizeof(float), g->data,
-                          g_elems * sizeof(float), ACL_MEMCPY_DEVICE_TO_DEVICE));
-    for (size_t i = 0; i < g_elems; i++) {
-        g_host[i] = expf(g_host[i]);
-    }
-    ggml_cann_pool_alloc g_exp_alloc(ctx.pool());
-    void * g_exp = g_exp_alloc.alloc(g_elems * sizeof(float));
-    ACL_CHECK(aclrtMemcpy(g_exp, g_elems * sizeof(float), g_host.data(),
-                          g_elems * sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE));
-    acl_tensor_ptr acl_g    = make_gd_acl_tensor(g_exp, ACL_FLOAT, sizeof(float), n_seqs, H);
+    // Pass g directly to ACLNN (kernel handles gate application internally)
+    acl_tensor_ptr acl_g    = make_gd_acl_tensor(g->data, ACL_FLOAT, sizeof(float), n_seqs, H);
 
     // state: [num_slots, H, S_v, S_v] = [n_seqs, H, S_v, S_v] (4D)
     {
