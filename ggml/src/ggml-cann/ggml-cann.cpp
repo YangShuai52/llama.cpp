@@ -2704,6 +2704,9 @@ static bool ggml_backend_cann_supports_op(ggml_backend_dev_t dev, const ggml_ten
 #ifdef ASCEND_310P
         case GGML_OP_GATED_DELTA_NET:
             {
+                // Env var GGML_CANN_DISABLE_GDN=1 disables GDN v310 (for testing CPU fallback)
+                static bool disable_gdn = getenv("GGML_CANN_DISABLE_GDN") != nullptr;
+                if (disable_gdn) return false;
                 // Only support decode path (K=1, n_tokens=1 per seq) with v310 op
                 int32_t K = ggml_get_op_params_i32(op, 0);
                 if (K != 1) return false;
