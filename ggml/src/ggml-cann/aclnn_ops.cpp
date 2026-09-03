@@ -4529,40 +4529,20 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
     void * beta_f16 = beta_f16_alloc.alloc(beta_elems * sizeof(uint16_t));
     cast_f32_to_f16(beta, beta_f16);
 
-    // --- Cast state F32 -> F16 with V/K transpose ---
-    // llama.cpp stores state transposed: s_out[j*S_v + i] = S[i][j] (layout [K, V, H, N])
-    // ACLNN expects state layout [V, K, H, N] (K is contiguous in memory)
-    // Do physical transpose on host (state is small for decode: S_v*S_v*H*n_seqs floats)
+    // --- Cast state F32 -> F16 (no transpose needed: V==K==128 for Qwen3.5) ---
     size_t state_elems = ggml_nelements(state);
     ggml_cann_pool_alloc state_f16_alloc(ctx.pool());
     void * state_f16 = state_f16_alloc.alloc(state_elems * sizeof(uint16_t));
     {
-        // Step 1: Copy state from device to host
-        std::vector<float> state_host(state_elems);
-        ACL_CHECK(aclrtMemcpy(state_host.data(), state_elems * sizeof(float), state->data,
-                              state_elems * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST));
-        // Debug: print first few state values
-        fprintf(stderr, "[GDN] state[0..4]: %f %f %f %f | S_v=%ld H=%ld n_seqs=%ld\n",
-                state_host[0], state_host[1], state_host[2], state_host[3], (long)S_v, (long)H, (long)n_seqs);
-        // Step 2: Transpose [K, V, H, N] -> [V, K, H, N] and cast to F16
-        // For each head h and seq s: transpose S_v x S_v matrix
-        std::vector<uint16_t> state_transposed(state_elems);
-        for (int64_t s = 0; s < n_seqs; s++) {
-            for (int64_t h = 0; h < H; h++) {
-                const float * src = state_host.data() + (s * H + h) * S_v * S_v;
-                uint16_t * dst = state_transposed.data() + (s * H + h) * S_v * S_v;
-                // src[j*S_v + i] = S[i][j] (K=outer, V=inner)
-                // dst[i*S_v + j] = S[i][j] (V=outer, K=inner)
-                for (int64_t i = 0; i < S_v; i++) {
-                    for (int64_t j = 0; j < S_v; j++) {
-                        dst[i * S_v + j] = ggml_fp32_to_fp16(src[j * S_v + i]);
-                    }
-                }
-            }
+        acl_tensor_ptr acl_src = ggml_cann_create_tensor(state);
+        size_t elem_size = sizeof(uint16_t);
+        size_t nb[GGML_MAX_DIMS];
+        nb[0] = elem_size;
+        for (int i = 1; i < GGML_MAX_DIMS; i++) {
+            nb[i] = nb[i - 1] * state->ne[i - 1];
         }
-        // Step 3: Upload transposed F16 state to device
-        ACL_CHECK(aclrtMemcpy(state_f16, state_elems * sizeof(uint16_t), state_transposed.data(),
-                              state_elems * sizeof(uint16_t), ACL_MEMCPY_HOST_TO_DEVICE));
+        acl_tensor_ptr acl_dst = ggml_cann_create_tensor(state_f16, ACL_FLOAT16, elem_size, state->ne, nb, GGML_MAX_DIMS);
+        aclnn_cast(ctx, acl_src.get(), acl_dst.get(), ACL_FLOAT16);
     }
 
     // --- Create ACL tensors with correct shapes for v310 API ---
@@ -4593,8 +4573,20 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
         return ggml_cann_create_tensor(data, dtype, elem_size, ne, nb, 2);
     };
     acl_tensor_ptr acl_beta = make_gd_acl_tensor(beta_f16, ACL_FLOAT16, sizeof(uint16_t), n_seqs, H);
-    // Pass g directly to ACLNN (kernel handles gate application internally)
-    acl_tensor_ptr acl_g    = make_gd_acl_tensor(g->data, ACL_FLOAT, sizeof(float), n_seqs, H);
+    // CPU uses state *= exp(g), ACLNN uses state *= g directly.
+    // Compute exp(g) on host and upload to device.
+    size_t g_elems = ggml_nelements(g);
+    std::vector<float> g_host(g_elems);
+    ACL_CHECK(aclrtMemcpy(g_host.data(), g_elems * sizeof(float), g->data,
+                          g_elems * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST));
+    for (size_t i = 0; i < g_elems; i++) {
+        g_host[i] = expf(g_host[i]);
+    }
+    ggml_cann_pool_alloc g_exp_alloc(ctx.pool());
+    void * g_exp = g_exp_alloc.alloc(g_elems * sizeof(float));
+    ACL_CHECK(aclrtMemcpy(g_exp, g_elems * sizeof(float), g_host.data(),
+                          g_elems * sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE));
+    acl_tensor_ptr acl_g    = make_gd_acl_tensor(g_exp, ACL_FLOAT, sizeof(float), n_seqs, H);
 
     // state: [num_slots, H, S_v, S_v] = [n_seqs, H, S_v, S_v] (4D)
     {
@@ -4667,33 +4659,25 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
             aclnn_cast(ctx, acl_out_f16.get(), acl_out_f32.get(), ACL_FLOAT);
         }
 
-        // --- Transpose output state [V,K] -> [K,V] and cast F16 -> F32 ---
-        // ACLNN outputs state in [V, K, H, N] layout, llama.cpp expects [K, V, H, N]
+        // --- Cast updated state F16 -> F32 (no transpose needed) ---
         size_t state_offset = S_v * H * num_tokens * sizeof(float);
         {
-            // Copy ACLNN output state from device to host (F16)
-            std::vector<uint16_t> state_f16_host(state_elems);
-            ACL_CHECK(aclrtMemcpy(state_f16_host.data(), state_elems * sizeof(uint16_t), state_f16,
-                                  state_elems * sizeof(uint16_t), ACL_MEMCPY_DEVICE_TO_HOST));
-            // Transpose [V,K] -> [K,V] and cast F16 -> F32
-            std::vector<float> state_f32_transposed(state_elems);
-            for (int64_t s = 0; s < n_seqs; s++) {
-                for (int64_t h = 0; h < H; h++) {
-                    const uint16_t * src = state_f16_host.data() + (s * H + h) * S_v * S_v;
-                    float * dst = state_f32_transposed.data() + (s * H + h) * S_v * S_v;
-                    // src[i*S_v + j] = S[i][j] (V=outer, K=inner)
-                    // dst[j*S_v + i] = S[i][j] (K=outer, V=inner)
-                    for (int64_t i = 0; i < S_v; i++) {
-                        for (int64_t j = 0; j < S_v; j++) {
-                            dst[j * S_v + i] = ggml_fp16_to_fp32(src[i * S_v + j]);
-                        }
-                    }
-                }
-            }
-            // Upload transposed F32 state to dst
-            ACL_CHECK(aclrtMemcpy((char *)dst->data + state_offset, state_elems * sizeof(float),
-                                  state_f32_transposed.data(), state_elems * sizeof(float),
-                                  ACL_MEMCPY_HOST_TO_DEVICE));
+            int64_t s_ne[] = { S_v, S_v, H, n_seqs };
+            size_t s_nb[4];
+            s_nb[0] = sizeof(uint16_t);
+            s_nb[1] = s_nb[0] * s_ne[0];
+            s_nb[2] = s_nb[1] * s_ne[1];
+            s_nb[3] = s_nb[2] * s_ne[2];
+            acl_tensor_ptr acl_state_f16 = ggml_cann_create_tensor(state_f16, ACL_FLOAT16, sizeof(uint16_t), s_ne, s_nb, 4);
+
+            size_t dst_s_nb[4];
+            dst_s_nb[0] = sizeof(float);
+            dst_s_nb[1] = dst_s_nb[0] * S_v;
+            dst_s_nb[2] = dst_s_nb[1] * S_v;
+            dst_s_nb[3] = dst_s_nb[2] * H;
+            acl_tensor_ptr acl_state_f32 = ggml_cann_create_tensor((char *)dst->data + state_offset,
+                ACL_FLOAT, sizeof(float), s_ne, dst_s_nb, 4);
+            aclnn_cast(ctx, acl_state_f16.get(), acl_state_f32.get(), ACL_FLOAT);
         }
     }
 #else

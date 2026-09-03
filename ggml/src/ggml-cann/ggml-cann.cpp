@@ -2711,14 +2711,8 @@ static bool ggml_backend_cann_supports_op(ggml_backend_dev_t dev, const ggml_ten
                 const ggml_tensor * v = op->src[2];
                 if (!v || v->ne[2] != 1) return false;
                 for (int i = 0; i < 6; i++) {
-                    if (!op->src[i] || op->src[i]->type != GGML_TYPE_F32) {
-                        fprintf(stderr, "[GDN] supports_op: src[%d] type=%d (expected F32=%d)\n",
-                                i, op->src[i] ? (int)op->src[i]->type : -1, (int)GGML_TYPE_F32);
-                        return false;
-                    }
+                    if (!op->src[i] || op->src[i]->type != GGML_TYPE_F32) return false;
                 }
-                fprintf(stderr, "[GDN] supports_op: returning true (K=%d, n_tokens=%ld, n_seqs=%ld)\n",
-                        K, (long)v->ne[2], (long)v->ne[3]);
                 return true;
             }
 #endif
