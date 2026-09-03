@@ -61,9 +61,11 @@
 #include <aclnnop/aclnn_recurrent_gated_delta_rule.h>
 #ifdef ASCEND_310P
 #include <aclnnop/aclnn_recurrent_gated_delta_rule_v310.h>
+#if __has_include(<aclnnop/aclnn_causal_conv1d_v310.h>)
 #include <aclnnop/aclnn_causal_conv1d_v310.h>
 #include <aclnnop/aclnn_chunk_gated_delta_rule_fwd_h.h>
 #include <aclnnop/aclnn_chunk_fwd_o.h>
+#endif
 #endif
 
 #include <functional>
