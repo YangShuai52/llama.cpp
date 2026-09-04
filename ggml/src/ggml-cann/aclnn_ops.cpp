@@ -4573,25 +4573,8 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
         return ggml_cann_create_tensor(data, dtype, elem_size, ne, nb, 2);
     };
     acl_tensor_ptr acl_beta = make_gd_acl_tensor(beta_f16, ACL_FLOAT16, sizeof(uint16_t), n_seqs, H);
-    // CPU uses state *= exp(g), ACLNN uses state *= g directly.
-    // Use aclnnExp on device to compute exp(g) without host copy.
-    size_t g_elems = ggml_nelements(g);
-    ggml_cann_pool_alloc g_exp_alloc(ctx.pool());
-    void * g_exp = g_exp_alloc.alloc(g_elems * sizeof(float));
-    {
-        acl_tensor_ptr acl_g_src = ggml_cann_create_tensor(g);
-        size_t elem_size = sizeof(float);
-        int64_t ne[GGML_MAX_DIMS];
-        size_t  nb[GGML_MAX_DIMS];
-        memcpy(ne, g->ne, sizeof(ne));
-        nb[0] = elem_size;
-        for (int i = 1; i < GGML_MAX_DIMS; i++) {
-            nb[i] = nb[i - 1] * ne[i - 1];
-        }
-        acl_tensor_ptr acl_g_dst = ggml_cann_create_tensor(g_exp, ACL_FLOAT, elem_size, ne, nb, GGML_MAX_DIMS);
-        GGML_CANN_CALL_ACLNN_OP(ctx, Exp, acl_g_src.get(), acl_g_dst.get());
-    }
-    acl_tensor_ptr acl_g    = make_gd_acl_tensor(g_exp, ACL_FLOAT, sizeof(float), n_seqs, H);
+    // Pass g directly: the v310 kernel applies Exp() internally (line 557 in kernel)
+    acl_tensor_ptr acl_g    = make_gd_acl_tensor(g->data, ACL_FLOAT, sizeof(float), n_seqs, H);
 
     // state: [num_slots, H, S_v, S_v] = [n_seqs, H, S_v, S_v] (4D)
     {
