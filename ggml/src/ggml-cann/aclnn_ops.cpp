@@ -4513,6 +4513,22 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
         ACL_CHECK(aclrtMemcpy(beta_host.data(),    b_n*4, beta->data,    b_n*4, mk));
         ACL_CHECK(aclrtMemcpy(state_host.data(),   s_n*4, state->data,   s_n*4, mk));
 
+        // Dump tensor strides to check contiguity
+        fprintf(stderr, "[GDN-DUMP] q: ne=[%ld,%ld,%ld,%ld] nb=[%ld,%ld,%ld,%ld] cont_rows=%d\n",
+                (long)q->ne[0],(long)q->ne[1],(long)q->ne[2],(long)q->ne[3],
+                (long)q->nb[0],(long)q->nb[1],(long)q->nb[2],(long)q->nb[3],
+                ggml_is_contiguous_rows(q));
+        fprintf(stderr, "[GDN-DUMP] v: ne=[%ld,%ld,%ld,%ld] nb=[%ld,%ld,%ld,%ld] cont_rows=%d\n",
+                (long)v->ne[0],(long)v->ne[1],(long)v->ne[2],(long)v->ne[3],
+                (long)v->nb[0],(long)v->nb[1],(long)v->nb[2],(long)v->nb[3],
+                ggml_is_contiguous_rows(v));
+        fprintf(stderr, "[GDN-DUMP] g: ne=[%ld,%ld,%ld,%ld] nb=[%ld,%ld,%ld,%ld]\n",
+                (long)g->ne[0],(long)g->ne[1],(long)g->ne[2],(long)g->ne[3],
+                (long)g->nb[0],(long)g->nb[1],(long)g->nb[2],(long)g->nb[3]);
+        fprintf(stderr, "[GDN-DUMP] state: ne=[%ld,%ld,%ld,%ld] nb=[%ld,%ld,%ld,%ld]\n",
+                (long)state->ne[0],(long)state->ne[1],(long)state->ne[2],(long)state->ne[3],
+                (long)state->nb[0],(long)state->nb[1],(long)state->nb[2],(long)state->nb[3]);
+
         // CPU reference: same algorithm as ggml-cpu/ops.cpp
         cpu_ref_out.resize(S_v * H * num_tokens, 0.0f);
         cpu_ref_state.resize(S_v * S_v * H * n_seqs);
