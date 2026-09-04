@@ -4694,7 +4694,8 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
         acl_tensor_ptr acl_out = make_3d_acl_tensor(out_f16, S_v, H, n_seqs);
 
         // Call aclnnRecurrentGatedDeltaRuleV310
-        // gk = nullptr, numAcceptedTokens = nullptr (no spec decode)
+        // Sync stream to ensure all F16 casts completed before kernel reads them
+        ACL_CHECK(aclrtSynchronizeStream(ctx.stream()));
         GGML_CANN_CALL_ACLNN_OP(ctx, RecurrentGatedDeltaRuleV310,
                                 acl_q.get(), acl_k.get(), acl_v.get(), acl_beta.get(),
                                 acl_state.get(),
