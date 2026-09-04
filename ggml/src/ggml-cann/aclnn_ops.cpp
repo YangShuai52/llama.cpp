@@ -4587,6 +4587,7 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
         }
         acl_tensor_ptr acl_dst = ggml_cann_create_tensor(dst_buf, ACL_FLOAT16, elem_size, ne, nb, GGML_MAX_DIMS);
         aclnn_cast(ctx, acl_src.get(), acl_dst.get(), ACL_FLOAT16);
+        ACL_CHECK(aclrtSynchronizeStream(ctx.stream()));
     };
 
     size_t qkv_elems = ggml_nelements(q);
