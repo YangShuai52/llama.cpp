@@ -4290,7 +4290,6 @@ void ggml_cann_flash_attn_ext(ggml_backend_cann_context & ctx, ggml_tensor * dst
     }
 }
 
-static void ggml_cann_out_prod_fp(ggml_backend_cann_context & ctx, ggml_tensor * dst) {
     ggml_tensor * src0 = dst->src[0];  // weight  [ne00=m, ne01=K, ne02, ne03]
     ggml_tensor * src1 = dst->src[1];  // input   [ne10=n, ne11=K, ne12, ne13]
     GGML_TENSOR_BINARY_OP_LOCALS
@@ -4354,7 +4353,6 @@ static void ggml_cann_out_prod_fp(ggml_backend_cann_context & ctx, ggml_tensor *
     }
 }
 
-void ggml_cann_out_prod(ggml_backend_cann_context & ctx, ggml_tensor * dst) {
     ggml_tensor * src0 = dst->src[0];
 
     const enum ggml_type type = src0->type;
@@ -4362,7 +4360,6 @@ void ggml_cann_out_prod(ggml_backend_cann_context & ctx, ggml_tensor * dst) {
     switch (type) {
         case GGML_TYPE_F32:
         case GGML_TYPE_F16:
-            ggml_cann_out_prod_fp(ctx, dst);
             break;
         default:
             GGML_ABORT("Unsupport type for GGML_OP_OUT_PROD");
@@ -4505,55 +4502,30 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
         ACL_CHECK(aclrtSynchronizeStream(ctx.stream()));
     }
 
-    // --- Dump inputs to host and compute CPU reference for comparison ---
-    static bool dump_compare = getenv("GGML_CANN_DUMP_GDN") != nullptr;
-    std::vector<float> q_host, k_host, v_host, g_host, beta_host, state_host;
-    std::vector<float> cpu_ref_out, cpu_ref_state;
-    if (dump_compare) {
+    // --- Cast F32 inputs to F16 (q, k, v, beta) ---
         size_t qkv_n = ggml_nelements(q);
         size_t g_n   = ggml_nelements(g);
         size_t b_n   = ggml_nelements(beta);
         size_t s_n   = ggml_nelements(state);
-        q_host.resize(qkv_n); k_host.resize(qkv_n); v_host.resize(qkv_n);
-        g_host.resize(g_n); beta_host.resize(b_n); state_host.resize(s_n);
         aclrtMemcpyKind mk = ACL_MEMCPY_DEVICE_TO_HOST;
-        ACL_CHECK(aclrtMemcpy(q_host.data(),     qkv_n*4, q->data,     qkv_n*4, mk));
-        ACL_CHECK(aclrtMemcpy(k_host.data(),     qkv_n*4, k->data,     qkv_n*4, mk));
-        ACL_CHECK(aclrtMemcpy(v_host.data(),     qkv_n*4, v->data,     qkv_n*4, mk));
-        ACL_CHECK(aclrtMemcpy(g_host.data(),       g_n*4, g->data,       g_n*4, mk));
-        ACL_CHECK(aclrtMemcpy(beta_host.data(),    b_n*4, beta->data,    b_n*4, mk));
-        ACL_CHECK(aclrtMemcpy(state_host.data(),   s_n*4, state->data,   s_n*4, mk));
 
         // Dump tensor strides to check contiguity
-        fprintf(stderr, "[GDN-DUMP] q: ne=[%ld,%ld,%ld,%ld] nb=[%ld,%ld,%ld,%ld] cont_rows=%d\n",
                 (long)q->ne[0],(long)q->ne[1],(long)q->ne[2],(long)q->ne[3],
                 (long)q->nb[0],(long)q->nb[1],(long)q->nb[2],(long)q->nb[3],
                 ggml_is_contiguous_rows(q));
-        fprintf(stderr, "[GDN-DUMP] v: ne=[%ld,%ld,%ld,%ld] nb=[%ld,%ld,%ld,%ld] cont_rows=%d\n",
                 (long)v->ne[0],(long)v->ne[1],(long)v->ne[2],(long)v->ne[3],
                 (long)v->nb[0],(long)v->nb[1],(long)v->nb[2],(long)v->nb[3],
                 ggml_is_contiguous_rows(v));
-        fprintf(stderr, "[GDN-DUMP] g: ne=[%ld,%ld,%ld,%ld] nb=[%ld,%ld,%ld,%ld]\n",
                 (long)g->ne[0],(long)g->ne[1],(long)g->ne[2],(long)g->ne[3],
                 (long)g->nb[0],(long)g->nb[1],(long)g->nb[2],(long)g->nb[3]);
-        fprintf(stderr, "[GDN-DUMP] state: ne=[%ld,%ld,%ld,%ld] nb=[%ld,%ld,%ld,%ld]\n",
                 (long)state->ne[0],(long)state->ne[1],(long)state->ne[2],(long)state->ne[3],
                 (long)state->nb[0],(long)state->nb[1],(long)state->nb[2],(long)state->nb[3]);
 
         // CPU reference: same algorithm as ggml-cpu/ops.cpp
-        cpu_ref_out.resize(S_v * H * num_tokens, 0.0f);
-        cpu_ref_state.resize(S_v * S_v * H * n_seqs);
         for (int64_t s = 0; s < n_seqs; s++) {
             for (int64_t h = 0; h < H; h++) {
                 // state stored transposed: s_out[j*S_v+i] = S[i][j]
-                float * s_work = cpu_ref_state.data() + (s * H + h) * S_v * S_v;
-                memcpy(s_work, state_host.data() + (s * H + h) * S_v * S_v, S_v*S_v*sizeof(float));
                 for (int64_t t = 0; t < n_tokens; t++) {
-                    const float * q_d = q_host.data() + ((s * n_tokens + t) * H + h) * S_v;
-                    const float * k_d = k_host.data() + ((s * n_tokens + t) * H + h) * S_v;
-                    const float * v_d = v_host.data() + ((s * n_tokens + t) * H + h) * S_v;
-                    float beta_val = beta_host.data()[((s * n_tokens + t) * H + h)];
-                    float g_val    = g_host.data()[((s * n_tokens + t) * H + h)];
                     float ge = expf(g_val);
                     // state *= exp(g)
                     for (int64_t j = 0; j < S_v; j++)
@@ -4571,7 +4543,6 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
                         for (int64_t i = 0; i < S_v; i++)
                             s_work[j*S_v+i] += delta[j] * k_d[i];
                     // attn[j] = dot(s_out row j, q) * scale
-                    float * attn = cpu_ref_out.data() + ((s * n_tokens + t) * H + h) * S_v;
                     for (int64_t j = 0; j < S_v; j++) {
                         float sum = 0;
                         for (int64_t i = 0; i < S_v; i++) sum += s_work[j*S_v+i] * q_d[i];
@@ -4580,8 +4551,6 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
                 }
             }
         }
-        fprintf(stderr, "[GDN-DUMP] CPU ref computed. q[0..3]=%f %f %f %f g[0]=%f beta[0]=%f state[0]=%f\n",
-                q_host[0], q_host[1], q_host[2], q_host[3], g_host[0], beta_host[0], state_host[0]);
     }
 
     // --- Cast F32 inputs to F16 (q, k, v, beta) ---
@@ -4764,40 +4733,6 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
     }
 
         // --- Compare ACLNN output with CPU reference ---
-        if (dump_compare) {
-            // Stream is already synced above; read ACLNN output from dst            size_t out_n = S_v * H * num_tokens;
-            size_t st_n  = S_v * S_v * H * n_seqs;
-            size_t state_off = S_v * H * num_tokens * sizeof(float);
-            std::vector<float> cann_out(out_n), cann_state(st_n);
-            ACL_CHECK(aclrtMemcpy(cann_out.data(),   out_n*4, dst->data,                          out_n*4, ACL_MEMCPY_DEVICE_TO_HOST));
-            ACL_CHECK(aclrtMemcpy(cann_state.data(),  st_n*4, (char*)dst->data + state_off,       st_n*4, ACL_MEMCPY_DEVICE_TO_HOST));
-            // Compare attention output
-            float max_diff_out = 0; int diff_idx = -1;
-            for (size_t i = 0; i < out_n; i++) {
-                float d = fabsf(cann_out[i] - cpu_ref_out[i]);
-                if (d > max_diff_out) { max_diff_out = d; diff_idx = (int)i; }
-            }
-            // Compare state
-            float max_diff_st = 0; int diff_st_idx = -1;
-            for (size_t i = 0; i < st_n; i++) {
-                float d = fabsf(cann_state[i] - cpu_ref_state[i]);
-                if (d > max_diff_st) { max_diff_st = d; diff_st_idx = (int)i; }
-            }
-            fprintf(stderr, "[GDN-DUMP] OUT max_diff=%.6f at idx=%d (cpu=%f cann=%f)\n",
-                    max_diff_out, diff_idx,
-                    diff_idx >= 0 ? cpu_ref_out[diff_idx] : 0,
-                    diff_idx >= 0 ? cann_out[diff_idx] : 0);
-            fprintf(stderr, "[GDN-DUMP] STATE max_diff=%.6f at idx=%d (cpu=%f cann=%f)\n",
-                    max_diff_st, diff_st_idx,
-                    diff_st_idx >= 0 ? cpu_ref_state[diff_st_idx] : 0,
-                    diff_st_idx >= 0 ? cann_state[diff_st_idx] : 0);
-            // Print first 8 output values for visual comparison
-            fprintf(stderr, "[GDN-DUMP] OUT cpu[0..7]: ");
-            for (int i = 0; i < 8 && i < (int)out_n; i++) fprintf(stderr, "%.4f ", cpu_ref_out[i]);
-            fprintf(stderr, "\n[GDN-DUMP] OUT cann[0..7]: ");
-            for (int i = 0; i < 8 && i < (int)out_n; i++) fprintf(stderr, "%.4f ", cann_out[i]);
-            fprintf(stderr, "\n");
-        }
     }
 #else
     GGML_ABORT("CANN GDN v310 op only supported on ASCEND_310P");
