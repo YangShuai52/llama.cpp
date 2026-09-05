@@ -4494,6 +4494,10 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
 
     const float scale = 1.0f / sqrtf(float(S_v));
 
+    // Sync stream at start: ensure previous layer's NPU ops completed
+    // before we read input tensors and start F16 casts
+    ACL_CHECK(aclrtSynchronizeStream(ctx.stream()));
+
     // --- Dump inputs to host and compute CPU reference for comparison ---
     static bool dump_compare = getenv("GGML_CANN_DUMP_GDN") != nullptr;
     std::vector<float> q_host, k_host, v_host, g_host, beta_host, state_host;
@@ -4752,8 +4756,7 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
 
         // --- Compare ACLNN output with CPU reference ---
         if (dump_compare) {
-            // Stream is already synced above; read ACLNN output from dst
-            size_t out_n = S_v * H * num_tokens;
+            // Stream is already synced above; read ACLNN output from dst            size_t out_n = S_v * H * num_tokens;
             size_t st_n  = S_v * S_v * H * n_seqs;
             size_t state_off = S_v * H * num_tokens * sizeof(float);
             std::vector<float> cann_out(out_n), cann_state(st_n);
