@@ -4574,39 +4574,36 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
     }
 
     // --- Cast F32 inputs to F16 (q, k, v, beta) ---
-    // Data layout: ggml [S, H, 1, B] is contiguous with stride matching ACLNN [B, H, S] (reversed dims)
-    auto cast_f32_to_f16 = [&](ggml_tensor * src, void * dst_buf) {
-        acl_tensor_ptr acl_src = ggml_cann_create_tensor(src);
-        size_t elem_size = sizeof(uint16_t);
-        int64_t ne[GGML_MAX_DIMS];
-        size_t  nb[GGML_MAX_DIMS];
-        memcpy(ne, src->ne, sizeof(ne));
-        nb[0] = elem_size;
-        for (int i = 1; i < GGML_MAX_DIMS; i++) {
-            nb[i] = nb[i - 1] * ne[i - 1];
-        }
-        acl_tensor_ptr acl_dst = ggml_cann_create_tensor(dst_buf, ACL_FLOAT16, elem_size, ne, nb, GGML_MAX_DIMS);
-        aclnn_cast(ctx, acl_src.get(), acl_dst.get(), ACL_FLOAT16);
+    // q/k/v are small (S_v*H = 2048 elems), beta even smaller (H = 16 elems)
+    // Use host-side conversion to avoid 4 NPU kernel launches per layer
+    auto cast_f32_to_f16_host = [&](ggml_tensor * src, void * dst_buf) {
+        size_t n = ggml_nelements(src);
+        std::vector<float> tmp(n);
+        aclrtMemcpyKind mk = ggml_backend_buffer_is_host(src->buffer) ? ACL_MEMCPY_HOST_TO_HOST : ACL_MEMCPY_DEVICE_TO_HOST;
+        ACL_CHECK(aclrtMemcpy(tmp.data(), n * sizeof(float), src->data, n * sizeof(float), mk));
+        std::vector<uint16_t> f16_buf(n);
+        ggml_fp32_to_fp16_row(tmp.data(), f16_buf.data(), n);
+        ACL_CHECK(aclrtMemcpy(dst_buf, n * sizeof(uint16_t), f16_buf.data(), n * sizeof(uint16_t), ACL_MEMCPY_HOST_TO_DEVICE));
     };
 
     size_t qkv_elems = ggml_nelements(q);
     ggml_cann_pool_alloc q_f16_alloc(ctx.pool());
     void * q_f16 = q_f16_alloc.alloc(qkv_elems * sizeof(uint16_t));
-    cast_f32_to_f16(q, q_f16);
+    cast_f32_to_f16_host(q, q_f16);
 
     ggml_cann_pool_alloc k_f16_alloc(ctx.pool());
     void * k_f16 = k_f16_alloc.alloc(qkv_elems * sizeof(uint16_t));
-    cast_f32_to_f16(k, k_f16);
+    cast_f32_to_f16_host(k, k_f16);
 
     ggml_cann_pool_alloc v_f16_alloc(ctx.pool());
     void * v_f16 = v_f16_alloc.alloc(qkv_elems * sizeof(uint16_t));
-    cast_f32_to_f16(v, v_f16);
+    cast_f32_to_f16_host(v, v_f16);
 
     // beta: [1, H, 1, B], total elements = H * B
     size_t beta_elems = ggml_nelements(beta);
     ggml_cann_pool_alloc beta_f16_alloc(ctx.pool());
     void * beta_f16 = beta_f16_alloc.alloc(beta_elems * sizeof(uint16_t));
-    cast_f32_to_f16(beta, beta_f16);
+    cast_f32_to_f16_host(beta, beta_f16);
 
     // --- Cast state F32 -> F16 (no transpose: V==K, layout is equivalent) ---
     size_t state_elems = ggml_nelements(state);
@@ -4703,26 +4700,15 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
                                 acl_out.get());
 
         // --- Cast output F16 -> F32 ---
-        // Output is written to the first n_tokens*n_seqs rows of dst
+        // Output is small (S_v*H = 2048 elems), use host-side conversion
         {
-            int64_t out_ne[] = { S_v * H, num_tokens, 1, 1 };
-            size_t out_nb[4];
-            out_nb[0] = sizeof(uint16_t);
-            out_nb[1] = out_nb[0] * out_ne[0];
-            out_nb[2] = out_nb[1] * out_ne[1];
-            out_nb[3] = out_nb[2] * out_ne[2];
-            acl_tensor_ptr acl_out_f16 = ggml_cann_create_tensor(out_f16, ACL_FLOAT16, sizeof(uint16_t), out_ne, out_nb, 2);
-
-            // dst output region: first n_seqs rows
-            int64_t dst_out_ne[] = { S_v * H, num_tokens, 1, 1 };
-            size_t dst_nb[4];
-            dst_nb[0] = sizeof(float);
-            dst_nb[1] = dst_nb[0] * (S_v * H);
-            dst_nb[2] = dst_nb[1] * num_tokens;
-            dst_nb[3] = dst_nb[2] * 1;
-            acl_tensor_ptr acl_out_f32 = ggml_cann_create_tensor(dst->data, ACL_FLOAT, sizeof(float),
-                                                                 dst_out_ne, dst_nb, 2);
-            aclnn_cast(ctx, acl_out_f16.get(), acl_out_f32.get(), ACL_FLOAT);
+            std::vector<uint16_t> out_f16_host(S_v * H * num_tokens);
+            ACL_CHECK(aclrtMemcpy(out_f16_host.data(), S_v*H*num_tokens*sizeof(uint16_t), out_f16,
+                                  S_v*H*num_tokens*sizeof(uint16_t), ACL_MEMCPY_DEVICE_TO_HOST));
+            std::vector<float> out_f32(S_v * H * num_tokens);
+            ggml_fp16_to_fp32_row(out_f16_host.data(), out_f32.data(), S_v * H * num_tokens);
+            ACL_CHECK(aclrtMemcpy(dst->data, S_v*H*num_tokens*sizeof(float), out_f32.data(),
+                                  S_v*H*num_tokens*sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE));
         }
 
         // --- Cast updated state F16 -> F32 (no transpose) ---
