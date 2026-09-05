@@ -190,7 +190,7 @@ void ggml_cann_swiglu(ggml_backend_cann_context & ctx, ggml_tensor * dst) {
     ggml_tensor * src0 = dst->src[0];
     size_t elem_size = ggml_element_size(src0);
 
-    // src0 GGML: [2*ne0, ne1, ne2, ne3] → 3D view [2*ne0, ne1, ne2*ne3]
+    // src0 GGML: [2*ne0, ne1, ne2, ne3] �?3D view [2*ne0, ne1, ne2*ne3]
     // CANN reversed: [ne2*ne3, ne1, 2*ne0], split along CANN dim 2 (last).
     int64_t ne0_x2   = src0->ne[0];
     int64_t ne1      = src0->ne[1];
@@ -200,7 +200,7 @@ void ggml_cann_swiglu(ggml_backend_cann_context & ctx, ggml_tensor * dst) {
     acl_tensor_ptr acl_src = ggml_cann_create_tensor(src0->data, ggml_cann_type_mapping(src0->type),
                                                      elem_size, src3d_ne, src3d_nb, 3);
 
-    // dst GGML: [ne0, ne1, ne2, ne3] → 3D view [ne0, ne1, ne2*ne3]
+    // dst GGML: [ne0, ne1, ne2, ne3] �?3D view [ne0, ne1, ne2*ne3]
     int64_t ne0      = dst->ne[0];
     int64_t dst3d_ne[] = { ne0, ne1, ne23 };
     size_t  dst3d_nb[] = { (size_t)dst->nb[0], (size_t)dst->nb[1], (size_t)dst->nb[2] };
@@ -298,8 +298,8 @@ void ggml_cann_geglu(ggml_backend_cann_context & ctx, ggml_tensor * dst, int64_t
 
     acl_tensor_ptr acl_gelu_out = ggml_cann_create_tensor(
         gelu_out_alloc.get(), ggml_cann_type_mapping(dst->type), elem_size, ne, nb, GGML_MAX_DIMS);
-    // V3 adds activateLeft param; true → Gelu(left)*right, matching GGML convention.
-    // GGML dim 0 → CANN last dim (index GGML_MAX_DIMS-1 = 3 for 4D tensor).
+    // V3 adds activateLeft param; true �?Gelu(left)*right, matching GGML convention.
+    // GGML dim 0 �?CANN last dim (index GGML_MAX_DIMS-1 = 3 for 4D tensor).
     GGML_CANN_CALL_ACLNN_OP(ctx, GeGluV3, acl_src.get(), (int64_t)(GGML_MAX_DIMS - 1), approximate, true,
                              acl_dst.get(), acl_gelu_out.get());
 }
@@ -2584,7 +2584,7 @@ static void aclnn_index_fill_tensor(ggml_backend_cann_context & ctx,
 /**
  * @brief Initializes and caches all intermediate tensors required for RoPE
  *        (Rotary Position Embedding), including support for Yarn, mRoPE,
- *        i-mRoPE, Neox repeat strategy, independent sectors, frequency factors，
+ *        i-mRoPE, Neox repeat strategy, independent sectors, frequency factors�?
  *        and multi-section rotary groups.
  *
  * This function computes and caches the per-dimension θ coefficients used for
@@ -3158,7 +3158,7 @@ void ggml_cann_rope(ggml_backend_cann_context & ctx, ggml_tensor * dst) {
         int64_t dims[]   = { 3 };
         aclnn_roll(ctx, acl_input_tensor.get(), acl_input_roll_tensor.get(), shifts, dims);
 
-        // init [-1, -1, -1, 1, 1，1，...]
+        // init [-1, -1, -1, 1, 1�?�?..]
         minus_one_scale_buffer  = minus_one_scale_allocator.get();
         int64_t minus_one_ne[4] = { src0->ne[0], 1, 1, 1 };
         size_t  minus_one_nb[GGML_MAX_DIMS];
@@ -4255,7 +4255,7 @@ void ggml_cann_flash_attn_ext(ggml_backend_cann_context & ctx, ggml_tensor * dst
                                 nullptr                                // softmaxLse
         );
 
-        // Step 6: post-processing — slice padded output and/or cast to f32
+        // Step 6: post-processing �?slice padded output and/or cast to f32
         if (needs_padding) {
             ggml_cann_pool_alloc sliced_f16_allocator(ctx.pool());
 
@@ -4305,7 +4305,7 @@ static void ggml_cann_out_prod_fp(ggml_backend_cann_context & ctx, ggml_tensor *
     // Build a transposed view of src1 by swapping ne[0]/ne[1]:
     //   src1_t:  ggml[K,n] (swapped strides)  ->  ACL[n,K]
     //
-    // Matmul(src1_t [n,K], src0 [K,m]) = [n,m] = acl_dst  ✓
+    // Matmul(src1_t [n,K], src0 [K,m]) = [n,m] = acl_dst  �?
     //
     // The outer batch loop is kept because src0 may have fewer batch slices than
     // dst (ne02 <= ne2, ne03 <= ne3): this is a strided-broadcast not supported
@@ -4347,7 +4347,7 @@ static void ggml_cann_out_prod_fp(ggml_backend_cann_context & ctx, ggml_tensor *
                 (char *) dst->data + i2 * nb2 + i3 * nb3,
                 dst_acl_type, dst_type_sz, dst_ne, dst_nb, 2);
 
-            // Matmul(src1_t [n,K], src0 [K,m]) = [n,m] = acl_dst_s  ✓
+            // Matmul(src1_t [n,K], src0 [K,m]) = [n,m] = acl_dst_s  �?
             GGML_CANN_CALL_ACLNN_OP(ctx, Matmul,
                 acl_src1_t.get(), acl_src0_s.get(), acl_dst_s.get(), (int8_t) 1);
         }
@@ -4573,37 +4573,39 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
                 q_host[0], q_host[1], q_host[2], q_host[3], g_host[0], beta_host[0], state_host[0]);
     }
 
-    // --- Cast F32 inputs to F16 (q, k, v, beta) ---
-    // q/k/v are small (S_v*H = 2048 elems), beta even smaller (H = 16 elems)
-    // Use host-side conversion to avoid 4 NPU kernel launches per layer
-    auto cast_f32_to_f16_host = [&](ggml_tensor * src, void * dst_buf) {
-        size_t n = ggml_nelements(src);
-        std::vector<float> tmp(n);
-        aclrtMemcpyKind mk = ggml_backend_buffer_is_host(src->buffer) ? ACL_MEMCPY_HOST_TO_HOST : ACL_MEMCPY_DEVICE_TO_HOST;
-        ACL_CHECK(aclrtMemcpy(tmp.data(), n * sizeof(float), src->data, n * sizeof(float), mk));
-        std::vector<uint16_t> f16_buf(n);
-        ggml_fp32_to_fp16_row(tmp.data(), f16_buf.data(), n);
-        ACL_CHECK(aclrtMemcpy(dst_buf, n * sizeof(uint16_t), f16_buf.data(), n * sizeof(uint16_t), ACL_MEMCPY_HOST_TO_DEVICE));
+    // --- Cast F32 inputs to F16 (q, k, v, beta) via NPU ---
+    auto cast_f32_to_f16 = [&](ggml_tensor * src, void * dst_buf) {
+        acl_tensor_ptr acl_src = ggml_cann_create_tensor(src);
+        size_t elem_size = sizeof(uint16_t);
+        int64_t ne[GGML_MAX_DIMS];
+        size_t  nb[GGML_MAX_DIMS];
+        memcpy(ne, src->ne, sizeof(ne));
+        nb[0] = elem_size;
+        for (int i = 1; i < GGML_MAX_DIMS; i++) {
+            nb[i] = nb[i - 1] * ne[i - 1];
+        }
+        acl_tensor_ptr acl_dst = ggml_cann_create_tensor(dst_buf, ACL_FLOAT16, elem_size, ne, nb, GGML_MAX_DIMS);
+        aclnn_cast(ctx, acl_src.get(), acl_dst.get(), ACL_FLOAT16);
     };
 
     size_t qkv_elems = ggml_nelements(q);
     ggml_cann_pool_alloc q_f16_alloc(ctx.pool());
     void * q_f16 = q_f16_alloc.alloc(qkv_elems * sizeof(uint16_t));
-    cast_f32_to_f16_host(q, q_f16);
+    cast_f32_to_f16(q, q_f16);
 
     ggml_cann_pool_alloc k_f16_alloc(ctx.pool());
     void * k_f16 = k_f16_alloc.alloc(qkv_elems * sizeof(uint16_t));
-    cast_f32_to_f16_host(k, k_f16);
+    cast_f32_to_f16(k, k_f16);
 
     ggml_cann_pool_alloc v_f16_alloc(ctx.pool());
     void * v_f16 = v_f16_alloc.alloc(qkv_elems * sizeof(uint16_t));
-    cast_f32_to_f16_host(v, v_f16);
+    cast_f32_to_f16(v, v_f16);
 
     // beta: [1, H, 1, B], total elements = H * B
     size_t beta_elems = ggml_nelements(beta);
     ggml_cann_pool_alloc beta_f16_alloc(ctx.pool());
     void * beta_f16 = beta_f16_alloc.alloc(beta_elems * sizeof(uint16_t));
-    cast_f32_to_f16_host(beta, beta_f16);
+    cast_f32_to_f16(beta, beta_f16);
 
     // --- Cast state F32 -> F16 (no transpose: V==K, layout is equivalent) ---
     size_t state_elems = ggml_nelements(state);
@@ -4699,16 +4701,25 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
                                 nullptr, scale,
                                 acl_out.get());
 
-        // --- Cast output F16 -> F32 ---
-        // Output is small (S_v*H = 2048 elems), use host-side conversion
+        // --- Cast output F16 -> F32 via NPU ---
         {
-            std::vector<uint16_t> out_f16_host(S_v * H * num_tokens);
-            ACL_CHECK(aclrtMemcpy(out_f16_host.data(), S_v*H*num_tokens*sizeof(uint16_t), out_f16,
-                                  S_v*H*num_tokens*sizeof(uint16_t), ACL_MEMCPY_DEVICE_TO_HOST));
-            std::vector<float> out_f32(S_v * H * num_tokens);
-            ggml_fp16_to_fp32_row(out_f16_host.data(), out_f32.data(), S_v * H * num_tokens);
-            ACL_CHECK(aclrtMemcpy(dst->data, S_v*H*num_tokens*sizeof(float), out_f32.data(),
-                                  S_v*H*num_tokens*sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE));
+            int64_t out_ne[] = { S_v * H, num_tokens, 1, 1 };
+            size_t out_nb[4];
+            out_nb[0] = sizeof(uint16_t);
+            out_nb[1] = out_nb[0] * out_ne[0];
+            out_nb[2] = out_nb[1] * out_ne[1];
+            out_nb[3] = out_nb[2] * out_ne[2];
+            acl_tensor_ptr acl_out_f16 = ggml_cann_create_tensor(out_f16, ACL_FLOAT16, sizeof(uint16_t), out_ne, out_nb, 2);
+
+            int64_t dst_out_ne[] = { S_v * H, num_tokens, 1, 1 };
+            size_t dst_nb[4];
+            dst_nb[0] = sizeof(float);
+            dst_nb[1] = dst_nb[0] * (S_v * H);
+            dst_nb[2] = dst_nb[1] * num_tokens;
+            dst_nb[3] = dst_nb[2] * 1;
+            acl_tensor_ptr acl_out_f32 = ggml_cann_create_tensor(dst->data, ACL_FLOAT, sizeof(float),
+                                                                 dst_out_ne, dst_nb, 2);
+            aclnn_cast(ctx, acl_out_f16.get(), acl_out_f32.get(), ACL_FLOAT);
         }
 
         // --- Cast updated state F16 -> F32 (no transpose) ---
@@ -4881,13 +4892,13 @@ void ggml_cann_gated_linear_attn(ggml_backend_cann_context & ctx, ggml_tensor * 
                 acl_tensor_ptr       acl_v = ggml_cann_create_tensor(v, ne_vo, nb_vo, 2, ACL_FORMAT_ND, qkvgo_offset);
                 // D
                 acl_tensor_ptr       acl_o = ggml_cann_create_tensor(dst, ne_q, nb_q, 1, ACL_FORMAT_ND, qkvgo_offset);
-                // k ⊗ v
+                // k �?v
                 size_t               buf_size = D * D * nb_base;
                 ggml_cann_pool_alloc buffer_allocator(ctx.pool(), buf_size);
                 acl_tensor_ptr       tmp_tensor = ggml_cann_create_tensor(
                     buffer_allocator.get(), ggml_cann_type_mapping(k->type), nb_base, ne_s, nb_s, 2);
                 aclnn_mul(ctx, acl_k.get(), acl_v.get(), tmp_tensor.get());
-                //s_new = g ⊗ s_old + k ⊗ v
+                //s_new = g �?s_old + k �?v
                 aclnn_mul(ctx, acl_s_new.get(), acl_g.get(), nullptr);
                 aclnn_add(ctx, acl_s_new.get(), tmp_tensor.get(), nullptr);
                 // compute output
@@ -4897,3 +4908,4 @@ void ggml_cann_gated_linear_attn(ggml_backend_cann_context & ctx, ggml_tensor * 
         }
     }
 }
+
