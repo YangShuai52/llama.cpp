@@ -4494,9 +4494,16 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
 
     const float scale = 1.0f / sqrtf(float(S_v));
 
+    // Sync mode: 0=both(default), 1=end-only, 2=none, 3=start-only
+    static int sync_mode = []() {
+        const char * env = getenv("GGML_CANN_GDN_SYNC_MODE");
+        return env ? atoi(env) : 0;
+    }();
+
     // Sync stream at start: ensure previous layer's NPU ops completed
-    // before we read input tensors and start F16 casts
-    ACL_CHECK(aclrtSynchronizeStream(ctx.stream()));
+    if (sync_mode == 0 || sync_mode == 3) {
+        ACL_CHECK(aclrtSynchronizeStream(ctx.stream()));
+    }
 
     // --- Dump inputs to host and compute CPU reference for comparison ---
     static bool dump_compare = getenv("GGML_CANN_DUMP_GDN") != nullptr;
@@ -4751,7 +4758,9 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
         }
 
         // Ensure all NPU ops complete before pool buffers are freed/reused
-        ACL_CHECK(aclrtSynchronizeStream(ctx.stream()));
+        if (sync_mode == 0 || sync_mode == 1) {
+            ACL_CHECK(aclrtSynchronizeStream(ctx.stream()));
+        }
     }
 
         // --- Compare ACLNN output with CPU reference ---
