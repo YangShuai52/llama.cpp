@@ -4354,6 +4354,7 @@ static void ggml_cann_out_prod_fp(ggml_backend_cann_context & ctx, ggml_tensor *
     }
 }
 
+void ggml_cann_out_prod(ggml_backend_cann_context & ctx, ggml_tensor * dst) {
     ggml_tensor * src0 = dst->src[0];
 
     const enum ggml_type type = src0->type;
@@ -4361,6 +4362,7 @@ static void ggml_cann_out_prod_fp(ggml_backend_cann_context & ctx, ggml_tensor *
     switch (type) {
         case GGML_TYPE_F32:
         case GGML_TYPE_F16:
+            ggml_cann_out_prod_fp(ctx, dst);
             break;
         default:
             GGML_ABORT("Unsupport type for GGML_OP_OUT_PROD");
@@ -4501,57 +4503,6 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
     // Sync stream at start: ensure previous layer's NPU ops completed
     if (sync_mode == 0 || sync_mode == 3) {
         ACL_CHECK(aclrtSynchronizeStream(ctx.stream()));
-    }
-
-    // --- Cast F32 inputs to F16 (q, k, v, beta) ---
-        size_t qkv_n = ggml_nelements(q);
-        size_t g_n   = ggml_nelements(g);
-        size_t b_n   = ggml_nelements(beta);
-        size_t s_n   = ggml_nelements(state);
-        aclrtMemcpyKind mk = ACL_MEMCPY_DEVICE_TO_HOST;
-
-        // Dump tensor strides to check contiguity
-                (long)q->ne[0],(long)q->ne[1],(long)q->ne[2],(long)q->ne[3],
-                (long)q->nb[0],(long)q->nb[1],(long)q->nb[2],(long)q->nb[3],
-                ggml_is_contiguous_rows(q));
-                (long)v->ne[0],(long)v->ne[1],(long)v->ne[2],(long)v->ne[3],
-                (long)v->nb[0],(long)v->nb[1],(long)v->nb[2],(long)v->nb[3],
-                ggml_is_contiguous_rows(v));
-                (long)g->ne[0],(long)g->ne[1],(long)g->ne[2],(long)g->ne[3],
-                (long)g->nb[0],(long)g->nb[1],(long)g->nb[2],(long)g->nb[3]);
-                (long)state->ne[0],(long)state->ne[1],(long)state->ne[2],(long)state->ne[3],
-                (long)state->nb[0],(long)state->nb[1],(long)state->nb[2],(long)state->nb[3]);
-
-        // CPU reference: same algorithm as ggml-cpu/ops.cpp
-        for (int64_t s = 0; s < n_seqs; s++) {
-            for (int64_t h = 0; h < H; h++) {
-                // state stored transposed: s_out[j*S_v+i] = S[i][j]
-                for (int64_t t = 0; t < n_tokens; t++) {
-                    float ge = expf(g_val);
-                    // state *= exp(g)
-                    for (int64_t j = 0; j < S_v; j++)
-                        for (int64_t i = 0; i < S_v; i++)
-                            s_work[j*S_v+i] *= ge;
-                    // delta[j] = (v[j] - dot(s_out row j, k)) * beta
-                    float delta[256];
-                    for (int64_t j = 0; j < S_v; j++) {
-                        float sum = 0;
-                        for (int64_t i = 0; i < S_v; i++) sum += s_work[j*S_v+i] * k_d[i];
-                        delta[j] = (v_d[j] - sum) * beta_val;
-                    }
-                    // s_out += delta[j] * k[i]
-                    for (int64_t j = 0; j < S_v; j++)
-                        for (int64_t i = 0; i < S_v; i++)
-                            s_work[j*S_v+i] += delta[j] * k_d[i];
-                    // attn[j] = dot(s_out row j, q) * scale
-                    for (int64_t j = 0; j < S_v; j++) {
-                        float sum = 0;
-                        for (int64_t i = 0; i < S_v; i++) sum += s_work[j*S_v+i] * q_d[i];
-                        attn[j] = sum * scale;
-                    }
-                }
-            }
-        }
     }
 
     // --- Cast F32 inputs to F16 (q, k, v, beta) ---
@@ -4734,7 +4685,7 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
     }
 
         // --- Compare ACLNN output with CPU reference ---
-    }
+        }
 #else
     GGML_ABORT("CANN GDN v310 op only supported on ASCEND_310P");
 #endif
