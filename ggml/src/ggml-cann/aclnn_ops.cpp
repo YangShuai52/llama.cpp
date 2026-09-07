@@ -4494,14 +4494,25 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
 
     const float scale = 1.0f / sqrtf(float(S_v));
 
-    // Sync mode: 0=both(default), 1=end-only, 2=none, 3=start-only
+    // Use event instead of full stream sync for lower overhead
+    // Event ensures previous GDN layer completed before reading inputs
+    static aclrtEvent gdn_event = []() {
+        aclrtEvent ev;
+        ACL_CHECK(aclrtCreateEvent(&ev));
+        return ev;
+    }();
+    static bool gdn_event_recorded = false;
+
+    // Sync mode: 0=event(default), 1=stream-sync, 2=none
     static int sync_mode = []() {
         const char * env = getenv("GGML_CANN_GDN_SYNC_MODE");
         return env ? atoi(env) : 0;
     }();
 
-    // Sync stream at start: ensure previous layer's NPU ops completed
-    if (sync_mode == 0 || sync_mode == 3) {
+    // Wait for previous GDN layer to complete
+    if (sync_mode == 0 && gdn_event_recorded) {
+        ACL_CHECK(aclrtStreamWaitEvent(ctx.stream(), gdn_event));
+    } else if (sync_mode == 1) {
         ACL_CHECK(aclrtSynchronizeStream(ctx.stream()));
     }
 
@@ -4679,13 +4690,14 @@ void ggml_cann_gated_delta_net(ggml_backend_cann_context & ctx, ggml_tensor * ds
         }
 
         // Ensure all NPU ops complete before pool buffers are freed/reused
-        if (sync_mode == 0 || sync_mode == 1) {
+        // Record event so next GDN layer can wait on it
+        if (sync_mode == 0) {
+            ACL_CHECK(aclrtRecordEvent(gdn_event, ctx.stream()));
+            gdn_event_recorded = true;
+        } else if (sync_mode == 1) {
             ACL_CHECK(aclrtSynchronizeStream(ctx.stream()));
         }
     }
-
-        // --- Compare ACLNN output with CPU reference ---
-        }
 #else
     GGML_ABORT("CANN GDN v310 op only supported on ASCEND_310P");
 #endif
